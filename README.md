@@ -18,7 +18,9 @@ Current limitations:
 - No support for linkable object files;
 - No support for expressions in constants;
 - Decimal and hexadecimal literals supported, but not binary literals;
-- Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.).
+- Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.);
+- Symbols not allowed for registers Rn and ports Pn;
+- Code (mnemonics and pre-defined symbols) must be in upper case.
 
 
 To compile the assembler
@@ -126,6 +128,16 @@ Copyright notice
 Microchip, Inc. holds the copyrights to the CTS256A-AL2 ROM Image.
 Microchip retains the intellectual property rights to the algorithms and data the emulated device CTS256A-AL2 contains.
 
+
+To do next
+----------
+
+- Allow lower case;
+- Allow symbols for `Rn` and `Pn`;
+- Allow expressions;
+- Allow binary constants;
+- Allow Z-80-style hex constants `0nnH`;
+- Generate Intel HEX format output.
 
 
 GPLv3 License
