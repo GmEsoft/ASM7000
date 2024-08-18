@@ -171,10 +171,20 @@ To do next
 - [x] synonym ORG = AORG;
 - [x] synonym DB = BYTE/TEXT (todo: DB "text");
 - [x] synonym DW = DATA;
+- [ ] Refactor/streamline the parser;
+- [ ] Add DATE and TIME string constants.
 
 Known issues
 ------------
 - [ ] parsing of expressions `X-Y+Z` evaluated `X-(Y+Z)`
+- [ ] arguments field containing white space, eg: `mov %10, count`
+- [ ] `DB "string"` not handled
+- [ ] `DB count dup (x)` not handled
+- [ ] `hi(x)` & `lo(x)` not handled (functions)
+- [ ] `STA flags` instead of `STA @flags`
+
+
+
 
 
 GPLv3 License
