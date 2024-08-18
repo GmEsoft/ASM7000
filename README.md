@@ -4,7 +4,7 @@ ASM7000
 Tiny assembler for TMS-7000 / PIC-7000 series
 ---------------------------------------------
 
-Version v0.1.0-alpha
+Version v0.2.0-alpha
 
 Work in progress. This is already viable to assemble the source code
 of the CTS256A-AL2 chip from G.I. without error and without any difference
@@ -14,14 +14,39 @@ wrt. the binary image (https://www.github.com/GmEsoft/CTS256A-AL2).
 Current limitations:
 --------------------
 
-- Macros not supported;
-- No support for linkable object files;
-- No support for expressions in constants;
-- Decimal and hexadecimal literals supported, but not binary literals;
-- Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.);
-- Symbols not allowed for registers Rn and ports Pn;
-- Code (mnemonics and pre-defined symbols) must be in upper case.
+- [x] Fields must be separated by a tab - no spaces allowed;
+- [ ] Macros not supported;
+- [ ] No support for linkable object files;
+- [ ] No full support for expressions in constants;
+- [x] Decimal and hexadecimal literals supported, but not binary literals;
+- [ ] Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.);
+- [x] Symbols not allowed for registers Rn and ports Pn;
+- [x] Code (mnemonics and pre-defined symbols) must be in upper case.;
+- [ ] No support for `INCLUDE file`.
+- [ ] No support for functions.
 
+
+History
+-------
+
+### v0.2.0-alpha:
+- convert tokens to uppercase taking quotes into account;
+- parse binary strings;
+- parse expressions containing + or - (todo: unary '-');
+- parse char literals;
+- ignore ':' after labels;
+- allow symbols for regs and ports;
+- allow 'H' and 'B' as suffixes for hex and binary literals;
+- fix (B) handling (error in "%10" parsing);
+- add "-NE" to disable error listing to stderr;
+- allow space and ':' as field separators;
+- synonym ORG = AORG;
+- synonym DB = BYTE/TEXT (todo: DB "text");
+- synonym DW = DATA;
+- fix DJNZ.
+
+### v0.1.0-alpha: 
+- initial commit
 
 To compile the assembler
 ------------------------
@@ -132,12 +157,24 @@ Microchip retains the intellectual property rights to the algorithms and data th
 To do next
 ----------
 
-- Allow lower case;
-- Allow symbols for `Rn` and `Pn`;
-- Allow expressions;
-- Allow binary constants;
-- Allow Z-80-style hex constants `0nnH`;
-- Generate Intel HEX format output.
+- [x] Allow lower case;
+- [x] Allow spaces as field separators;
+- [x] Allow symbols for `Rn` and `Pn`;
+- [ ] Allow expressions;
+- [ ] Generate Intel HEX format output;
+- [ ] Support `INCLUDE` files.
+- [x] parse binary strings;
+- [x] parse expressions containing + or - (todo: unary '-');
+- [x] parse char literals;
+- [x] ignore ':' after labels;
+- [x] allow 'H' and 'B' as suffixes for hex and binary literals;
+- [x] synonym ORG = AORG;
+- [x] synonym DB = BYTE/TEXT (todo: DB "text");
+- [x] synonym DW = DATA;
+
+Known issues
+------------
+- [ ] parsing of expressions `X-Y+Z` evaluated `X-(Y+Z)`
 
 
 GPLv3 License

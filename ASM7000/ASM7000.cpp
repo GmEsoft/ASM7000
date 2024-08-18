@@ -16,7 +16,7 @@ typedef unsigned char  byte;
 typedef map< string, word > symbols_t;
 typedef symbols_t::const_iterator symbolptr_t;
 
-const char title[] = "** TMS-7000 tiny assembler - v0.1.0-alpha - (C) 2024 GmEsoft, All rights reserved. **";
+const char title[] = "** TMS-7000 tiny assembler - v0.2.0-alpha - (C) 2024 GmEsoft, All rights reserved. **";
 
 const char help[] = "Usage: ASM7000 -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]\n";
 
@@ -39,6 +39,22 @@ enum ArgType
 	ARG_B,
 	ARG_ST,
 	ARG_TEXT
+};
+
+const char* argtypes[] =
+{
+	"NONE",
+	"IMM",
+	"EFFEC",
+	"DIR",
+	"INDEX",
+	"INDIR",
+	"REG",
+	"PORT",
+	"A",
+	"B",
+	"ST",
+	"TEXT"
 };
 
 struct Arg
@@ -68,7 +84,7 @@ char* timeStr()
 
 
 // Split string to tokens using provided separator
-vector<string> split( string str, char sep )
+vector<string> split( string str, const string &sep )
 {
 	vector<string> tokens;
 	tokens.reserve( 5 );
@@ -80,28 +96,28 @@ vector<string> split( string str, char sep )
 	while ( *p )
 	{
 		cmt = cmt || ( !quot && *p == ';' );
-		do
+		while ( *p && ( cmt || sep.find( *p ) == string::npos ) )
 		{
-			if ( quot )
+			do
 			{
-				if ( !*p || quot == *p )
-					quot = 0;
+				if ( quot )
+				{
+					if ( !*p || quot == *p )
+						quot = 0;
+				}
+				else if ( *p == '\'' || *p == '"' )
+				{
+					quot = *p;
+				}
+				if ( quot )
+					++p;
 			}
-			else if ( *p == '\'' || *p == '"' )
-			{
-				quot = *p;
-			}
-			if ( quot )
-				++p;
-		}
-		while ( quot );
+			while ( *p && quot );
 
-		while ( *p && ( cmt || *p != sep ) )
-		{
 			++p;
 		}
 		tokens.push_back( string( p0, p ) );
-		while ( *p && !cmt && *p == sep )
+		while ( *p && !cmt && sep.find( *p ) != string::npos )
 		{
 			++p;
 		}
@@ -129,6 +145,36 @@ void tab( string &str, int tab )
 
 }
 
+string touppernotquoted( const string& str )
+{
+	string ret = str;
+	bool esc = false;
+	char quot = 0;
+	for ( int i=0; i<ret.size(); ++i )
+	{
+		char c = ret[i];
+		if ( esc )
+			esc = false;
+		else if ( quot )
+		{
+			if ( c == quot )
+				quot = 0;
+		}
+		else if ( c == '\\' )
+		{
+			esc = true;
+		}
+		else
+		{
+			if ( c == '"' || c == '\'' )
+				quot = c;
+			else if ( !quot )
+				ret[i] = toupper( c );
+		}
+	}
+	return ret;
+}
+
 void error( const char* format, ... )
 {
 	static char buf[80];
@@ -151,13 +197,50 @@ bool chkargs( const string& op, const vector< Arg > &args, size_t num )
 	return args.size() == num;
 }
 
+word parsebin( const string &arg )
+{
+	word ret = 0;
+	for ( int i=0; i<arg.size() && ( arg[i] | 1 ) == '1'; ++i )
+		ret = ( ret << 1 ) | ( arg[i] & 1 );
+	return ret;
+}
+
 word parselit( const string &arg )
 {
 	word ret = 0xFFFF;
 	size_t size = arg.size();
+
 	if ( size > 0 )
 	{
-		if ( arg[0] == '$' )
+		size_t pos;
+		char first = arg[0];
+		char last  = arg[arg.size() - 1];
+		if ( size > 2 && first == '"' && last == '"' )
+		{
+			//cerr << "TEXT: [" << arg << "]" << endl;
+		}
+		else if ( size > 3 && first == '\'' && last == '\'' && arg.substr( 2, size-3 ).find('\'') == string::npos )
+		{
+			//cerr << "TEXT: [" << arg << "]" << endl;
+		}
+		else if ( ( pos = arg.find( '+' ) ) != string::npos && !( first == '\'' && pos == 1 ) )
+		{
+			//cerr << arg << ": [" << arg.substr( 0, pos ) << "]+[" << arg.substr( pos + 1 ) << "]" << endl;
+			ret = parselit( arg.substr( 0, pos ) )
+				+ parselit( arg.substr( pos + 1 ) );
+		}
+		else if ( ( pos = arg.find( '-' ) ) != string::npos && !( first == '\'' && pos == 1 ) )
+		{
+			//cerr << arg << ": [" << arg.substr( 0, pos ) << "]-[" << arg.substr( pos + 1 ) << "]" << endl;
+			ret = parselit( arg.substr( 0, pos ) )
+				- parselit( arg.substr( pos + 1 ) );
+		}
+		else if ( size > 2 && first == '\'' && last == '\'' )
+		{
+			//cerr << "[" << arg << "]" << endl;
+			ret = ( size > 2 && arg[1] == '\\' ) ? arg[2] : arg[1];
+		}
+		else if ( first == '$' )
 		{
 			ret = pc;
 			if ( size > 1 )
@@ -167,19 +250,28 @@ word parselit( const string &arg )
 				else if ( arg[1] == '-' )
 					ret -= parselit( arg.substr( 2 ) );
 				else
-					error( "Error in expression: %s", arg.data() );
+					error( "Error in expression: [%s]", arg.data() );
 			}
 		}
-		else if ( arg[0] == '>' )
+		else if ( first == '>' )
 		{
 			stringstream sstr( arg.substr( 1 ) );
 			sstr >> hex >> ret;
 		}
-		else if ( arg[0] == '?' )
+		else if ( first == '?' )
 		{
-			error( "Binary format not supported: %s", arg.data() );
+			ret = parsebin( arg.substr( 1 ) );
 		}
-		else if ( isdigit( arg[0] ) )
+		else if ( isdigit( first ) && last == 'H' )
+		{
+			stringstream sstr( arg );
+			sstr >> hex >> ret;
+		}
+		else if ( isdigit( first ) && last == 'B' )
+		{
+			ret = parsebin( arg.substr( 1 ) );
+		}
+		else if ( isdigit( first ) )
 		{
 			stringstream sstr( arg );
 			sstr >> ret;
@@ -193,7 +285,7 @@ word parselit( const string &arg )
 			}
 			else
 			{
-				error( "Symbol not found: %s", arg.data() );
+				error( "Symbol not found: [%s]", arg.data() );
 			}
 		}
 	}
@@ -227,7 +319,7 @@ Arg getarg( const string &arg )
 	}
 	else if ( arg[0] == '%' )
 	{
-		if ( arg.find( "(B)" ) == arg.size() - 3 )
+		if ( size > 3 && arg.find( "(B)" ) == arg.size() - 3 )
 		{
 			ret.type = ARG_EFFEC;
 			ret.data = parselit( arg.substr( 1, arg.size() - 4 ) );
@@ -242,6 +334,11 @@ Arg getarg( const string &arg )
 	{
 		ret.type = ARG_INDIR;
 		ret.data = parselit( arg.substr( 2 ) );
+	}
+	else if ( size > 2 && arg[0] == '*' )
+	{
+		ret.type = ARG_INDIR;
+		ret.data = parselit( arg.substr( 1 ) );
 	}
 	else if ( arg[0] == '@' )
 	{
@@ -264,16 +361,21 @@ Arg getarg( const string &arg )
 	else if ( size > 1 && arg[0] == 'P' && isdigit( arg[1] ) )
 	{
 		ret.type = ARG_PORT;
-		ret.data = parselit( arg.substr( 1 ) );
+		ret.data = parselit( arg.substr( 1 ) ) | 0x100;
 	}
-	else if ( arg[0] == '\'' || ( size > 1 && arg[0] == '-' && arg[1] == '\'' ) )
+	/*else if ( arg[0] == '\'' || ( size > 1 && arg[0] == '-' && arg[1] == '\'' ) )
 	{
 		ret.type = ARG_TEXT;
 	}
-	else
+	*/else
 	{
-		ret.type = ARG_IMM;
 		ret.data = parselit( arg );
+		ret.type = ( arg[0] == '>' || arg[0] == '?' || arg[0] == '$' || arg[0] == '\'' || isdigit( arg[0] ) ) ? ARG_IMM
+				 : ret.data < 0x100 ? ARG_REG
+				 : ret.data < 0x200 ? ARG_PORT
+				 : ARG_IMM;
+		//if ( arg == "COUNT" )
+		//	cerr << arg << ":" << hex << ret.data << "/" << ret.type << endl;
 	}
 	return ret;
 }
@@ -282,16 +384,16 @@ Arg getarg( const string &arg )
 word getimmediate( const Arg &arg )
 {
 	if ( arg.type != ARG_IMM )
-		error( "Expecting immediate: %s", arg.str.data() );
+		error( "Expecting immediate: [%s]", arg.str.data() );
 	return arg.data;
 }
 
 word getbyte( const Arg &arg )
 {
-	if ( arg.type != ARG_IMM )
-		error( "Bad byte type: %s", arg.str.data() );
+	if ( arg.type != ARG_IMM && arg.type != ARG_REG )
+		error( "Bad byte type: [%s]", arg.str.data() );
 	else if ( short( arg.data ) < -128 || arg.data > 255 )
-		error( "Byte range error: %s", arg.str.data() );
+		error( "Byte range error: [%s]", arg.str.data() );
 	return arg.data & 0xFF;
 }
 
@@ -307,9 +409,12 @@ word getlow( const Arg &arg )
 
 word getnum( const Arg &arg )
 {
-	if ( arg.data > 255 )
-		error( "Number range error: %s", arg.str.data() );
-	return arg.data & 0xFF;
+	word ret = arg.data;
+	if ( arg.type == ARG_PORT )
+		ret -= 0x100;
+	if ( ret > 0xFF )
+		error( "Number range error: [%s]", arg.str.data() );
+	return ret & 0xFF;
 }
 
 word getoffset( word addr, const Arg &arg )
@@ -317,7 +422,7 @@ word getoffset( word addr, const Arg &arg )
 	short offset = arg.data - addr;
 	if ( offset < -128 || offset > 127 )
 	{
-		error( "Offset range error: %s", arg.str.data() );
+		error( "Offset range error: [%s]", arg.str.data() );
 //		return 0xFE;
 	}
 	return offset & 0xFF;
@@ -372,7 +477,8 @@ void ass_mov( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s %s,%s (%s,%s)",
+				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
 }
@@ -403,7 +509,7 @@ void ass_movd( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
 		}
 	}
 }
@@ -438,7 +544,7 @@ void ass_movp( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
 		}
 	}
 }
@@ -456,6 +562,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 		switch( args[0].type )
 		{
 		case ARG_DIR:
+		case ARG_IMM: // extension
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
 			instr.push_back( getlow( args[0] ) );
@@ -470,7 +577,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 			instr.push_back( getlow( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s %s", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
 		}
 	}
 }
@@ -508,7 +615,7 @@ bool ass_unop( const string op, vector< Arg > &args, int num, int bits, vector< 
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s %s", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
 		}
 	}
 	return ok;
@@ -565,7 +672,7 @@ bool ass_binop( const string op, vector< Arg > &args, int num, int bits, vector<
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
 		}
 	}
 	return ok;
@@ -598,7 +705,7 @@ bool ass_binop_p( const string op, vector< Arg > &args, int num, int bits, vecto
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
 		}
 	}
 	return ok;
@@ -617,7 +724,7 @@ void ass_jump( const string op, vector< Arg > &args, int bits, vector< byte > &i
 			instr.push_back( getoffset( pc+2, args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s %s", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
 		}
 	}
 }
@@ -634,7 +741,7 @@ void ass_trap( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( 0xE8 + args[0].data );
 			break;
 		default:
-			error( "Bad arg: %s %s", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
 		}
 	}
 }
@@ -664,7 +771,7 @@ void ass_pushpop( const string op, vector< Arg > &args, int bits, vector< byte >
 				instr.push_back( bits == 0x08 ? 0x0E : 0x08 );
 				break;
 			default:
-				error( "Bad arg: %s %s", op.data(), args[0].str.data() );
+				error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
 			}
 		}
 	}
@@ -689,6 +796,7 @@ void main( int argc, const char* argp[] )
 
 	bool noheader = false;
 	bool nolinenum = false;
+	bool nocerr = false;
 
 	for ( int i=1; i<argc; ++i )
 	{
@@ -723,6 +831,9 @@ void main( int argc, const char* argp[] )
 					break;
 				case 'N':
 					nolinenum = true;
+					break;
+				case 'E':
+					nocerr = true;
 					break;
 				}
 				break;
@@ -817,7 +928,7 @@ void main( int argc, const char* argp[] )
 
 			errors.clear();
 
-			vector< string > tokens = split( line, '\t' );
+			vector< string > tokens = split( line, "\t :" );
 
 			// get tokens
 			string label, op, comment;
@@ -825,7 +936,7 @@ void main( int argc, const char* argp[] )
 
 			for ( int i=0; i<tokens.size(); ++i )
 			{
-				const string &token = tokens[i];
+				string token = tokens[i];
 				if ( token[0] == ';' )
 				{
 					comment = token;
@@ -833,19 +944,22 @@ void main( int argc, const char* argp[] )
 				}
 				else
 				{
+					token = touppernotquoted( token );
 					switch ( i )
 					{
 					case 0:
 						label = token;
+						if ( !label.empty() && label[label.size()-1] == ':' )
+							label = label.substr( 0, label.size()-1 );
 						break;
 					case 1:
 						op = token;
 						break;
 					case 2:
-						argstrs = split( token, ',' );
+						argstrs = split( token, "," );
 						break;
 					default:
-						error( "Extra token %d: %s", i, token.data() );
+						error( "Extra token %d: [%s]", i, token.data() );
 						break;
 					}
 				}
@@ -863,13 +977,29 @@ void main( int argc, const char* argp[] )
 
 			if ( !label.empty() )
 			{
-				if ( op == "AORG" || op == "EQU" )
+				if ( op == "AORG" || op == "ORG" )
 				{
 					if ( chkargs( op, args, 1 ) )
 					{
 						addr = getimmediate( args[0] );
-						if ( op == "AORG" )
+						if ( op == "AORG" || op == "ORG" )
 							pc = addr;
+					}
+				}
+				else if ( op == "EQU" )
+				{
+					if ( chkargs( op, args, 1 ) )
+					{
+						switch ( args[0].type )
+						{
+						case ARG_IMM:
+						case ARG_REG:
+						case ARG_PORT:
+							addr = args[0].data;
+							break;
+						default:
+							error( "Bad addressing mode: [%s]", args[0].str.data() );
+						}
 					}
 				}
 
@@ -877,7 +1007,7 @@ void main( int argc, const char* argp[] )
 				if ( pass == 2 )
 				{
 					if ( sym != symbols.end() && sym->second != addr )
-						error ( "Multiple definition: %s", label.data() );
+						error ( "Multiple definition: [%s]", label.data() );
 				}
 				symbols[label] = addr;
 			}
@@ -887,7 +1017,7 @@ void main( int argc, const char* argp[] )
 			bool first = true;
 
 			// ============= AORG
-			if ( op == "AORG" )	// AORG aaaa
+			if ( op == "AORG" || op == "ORG" )	// AORG aaaa
 			{
 				if ( label.empty() )
 				{
@@ -1116,7 +1246,7 @@ void main( int argc, const char* argp[] )
 			{
 				if ( ass_unop( op, args, 2, 0x0A, instr ) )
 				{
-					instr.push_back( getoffset( pc+3, args[0] ) );
+					instr.push_back( getoffset( pc+3, args[1] ) );
 				}
 			}
 			// ============= BIT TESTS & SHORT JUMPS
@@ -1163,7 +1293,7 @@ void main( int argc, const char* argp[] )
 				ass_trap( op, args, instr );
 			}
 			// ============= DATA
-			else if ( op == "BYTE" ) // BYTE x,... (8-bit data)
+			else if ( op == "BYTE" || op == "DB" ) // BYTE x,... (8-bit data)
 			{
 				if ( !args.size() )
 					error( "Missing byte value(s)" );
@@ -1208,7 +1338,7 @@ void main( int argc, const char* argp[] )
 					}
 				}
 			}
-			else if ( op == "DATA" ) // DATA xxxx,... (16-bit data)
+			else if ( op == "DATA" || op == "DW" ) // DATA xxxx,... (16-bit data)
 			{
 				if ( !args.size() )
 					error( "Missing byte value(s)" );
@@ -1228,7 +1358,7 @@ void main( int argc, const char* argp[] )
 			}
 			else if ( !op.empty() ) // Unrecognized op-code
 			{
-				error( "Unrecognized op-code: %s", op.data() );
+				error( "Unrecognized op-code: [%s]", op.data() );
 			}
 
 			if ( pass == 2 )
@@ -1265,7 +1395,7 @@ void main( int argc, const char* argp[] )
 				{
 					for ( i=0; i<errors.size(); ++i )
 						ostr << "*** " << errors[i] << endl;
-					if ( !lstfile.empty() && cout != cerr )
+					if ( !nocerr && !lstfile.empty() && cout != cerr )
 					{
 						cerr << sstr.str();
 						for ( i=0; i<errors.size(); ++i )

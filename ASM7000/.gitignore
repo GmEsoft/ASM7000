@@ -1,3 +1,7 @@
 /*.bat
 /*.zip
+/*.cim
+/*.lst
 CTS256A*
+/CTS256-SP0256
+/*.err
