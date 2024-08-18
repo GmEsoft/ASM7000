@@ -13,10 +13,10 @@ using namespace std;
 typedef unsigned short word;
 typedef unsigned char  byte;
 
-typedef map< string, word > symbols_t;
+typedef map< string, word > symbols_t; // TODO: map< string, Arg >
 typedef symbols_t::const_iterator symbolptr_t;
 
-const char title[] = "** TMS-7000 tiny assembler - v0.2.0-alpha - (C) 2024 GmEsoft, All rights reserved. **";
+const char title[] = "** TMS-7000 tiny assembler - v0.2.1-alpha - (C) 2024 GmEsoft, All rights reserved. **";
 
 const char help[] = "Usage: ASM7000 -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]\n";
 
@@ -38,7 +38,9 @@ enum ArgType
 	ARG_A,
 	ARG_B,
 	ARG_ST,
-	ARG_TEXT
+	ARG_TEXT,
+	ARG_DATE,
+	ARG_TIME
 };
 
 const char* argtypes[] =
@@ -54,7 +56,9 @@ const char* argtypes[] =
 	"A",
 	"B",
 	"ST",
-	"TEXT"
+	"TEXT",
+	"DATE",
+	"TIME"
 };
 
 struct Arg
@@ -205,7 +209,7 @@ word parsebin( const string &arg )
 	return ret;
 }
 
-word parselit( const string &arg )
+word parselit( const string &arg ) // TODO: Arg parselit( const string &arg )
 {
 	word ret = 0xFFFF;
 	size_t size = arg.size();
@@ -316,6 +320,14 @@ Arg getarg( const string &arg )
 	else if ( arg == "ST" )
 	{
 		ret.type = ARG_ST;
+	}
+	else if ( arg == "DATE" )
+	{
+		ret.type = ARG_DATE;
+	}
+	else if ( arg == "TIME" )
+	{
+		ret.type = ARG_TIME;
 	}
 	else if ( arg[0] == '%' )
 	{
@@ -509,7 +521,8 @@ void ass_movd( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s %s,%s (%s,%s)",
+				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
 }
@@ -544,7 +557,8 @@ void ass_movp( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s %s,%s (%s,%s)",
+				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
 }
@@ -563,6 +577,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 		{
 		case ARG_DIR:
 		case ARG_IMM: // extension
+		case ARG_REG: // extension
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
 			instr.push_back( getlow( args[0] ) );
@@ -577,7 +592,10 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 			instr.push_back( getlow( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			instr.push_back( 0x80 | bits );
+			instr.push_back( gethigh( args[0] ) );
+			instr.push_back( getlow( args[0] ) );
 		}
 	}
 }
@@ -615,7 +633,7 @@ bool ass_unop( const string op, vector< Arg > &args, int num, int bits, vector< 
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 	return ok;
@@ -672,7 +690,8 @@ bool ass_binop( const string op, vector< Arg > &args, int num, int bits, vector<
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s %s,%s (%s,%s)",
+				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
 	return ok;
@@ -705,7 +724,8 @@ bool ass_binop_p( const string op, vector< Arg > &args, int num, int bits, vecto
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s [%s],[%s]", op.data(), args[0].str.data(), args[1].str.data() );
+			error( "Bad arg(s): %s %s,%s (%s,%s)",
+				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
 	return ok;
@@ -724,7 +744,7 @@ void ass_jump( const string op, vector< Arg > &args, int bits, vector< byte > &i
 			instr.push_back( getoffset( pc+2, args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 }
@@ -741,7 +761,7 @@ void ass_trap( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( 0xE8 + args[0].data );
 			break;
 		default:
-			error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
+			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 }
@@ -771,7 +791,7 @@ void ass_pushpop( const string op, vector< Arg > &args, int bits, vector< byte >
 				instr.push_back( bits == 0x08 ? 0x0E : 0x08 );
 				break;
 			default:
-				error( "Bad arg: %s [%s]", op.data(), args[0].str.data() );
+				error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 			}
 		}
 	}
@@ -931,8 +951,8 @@ void main( int argc, const char* argp[] )
 			vector< string > tokens = split( line, "\t :" );
 
 			// get tokens
-			string label, op, comment;
-			vector< string > argstrs;
+			string label, op, comment, argstr;
+
 
 			for ( int i=0; i<tokens.size(); ++i )
 			{
@@ -956,14 +976,16 @@ void main( int argc, const char* argp[] )
 						op = token;
 						break;
 					case 2:
-						argstrs = split( token, "," );
+						argstr = token;
 						break;
 					default:
-						error( "Extra token %d: [%s]", i, token.data() );
+						argstr += token;
 						break;
 					}
 				}
 			}
+
+			vector< string > argstrs = split( argstr, "," );
 
 			size_t nargs = argstrs.size();
 
@@ -1394,12 +1416,12 @@ void main( int argc, const char* argp[] )
 				if ( !errors.empty() )
 				{
 					for ( i=0; i<errors.size(); ++i )
-						ostr << "*** " << errors[i] << endl;
+						ostr << "*** Error: " << errors[i] << endl;
 					if ( !nocerr && !lstfile.empty() && cout != cerr )
 					{
 						cerr << sstr.str();
 						for ( i=0; i<errors.size(); ++i )
-							cerr << "*** " << errors[i] << endl;
+							cerr << "*** Error: " << errors[i] << endl;
 					}
 					errcount += errors.size();
 				}

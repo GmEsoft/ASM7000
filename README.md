@@ -20,7 +20,7 @@ Current limitations:
 - [ ] No full support for expressions in constants;
 - [x] Decimal and hexadecimal literals supported, but not binary literals;
 - [ ] Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.);
-- [x] Symbols not allowed for registers Rn and ports Pn;
+- [x] Symbols not allowed for registers `Rn` and ports `Pn`;
 - [x] Code (mnemonics and pre-defined symbols) must be in upper case.;
 - [ ] No support for `INCLUDE file`.
 - [ ] No support for functions.
@@ -28,6 +28,10 @@ Current limitations:
 
 History
 -------
+
+### v0.2.1-alpha:
+- allow white spaces in arguments field.
+- display wrong arg types in `Bad arg(s)` error messages.
 
 ### v0.2.0-alpha:
 - convert tokens to uppercase taking quotes into account;
@@ -177,7 +181,7 @@ To do next
 Known issues
 ------------
 - [ ] parsing of expressions `X-Y+Z` evaluated `X-(Y+Z)`
-- [ ] arguments field containing white space, eg: `mov %10, count`
+- [x] arguments field containing white space, eg: `mov %10, count`
 - [ ] `DB "string"` not handled
 - [ ] `DB count dup (x)` not handled
 - [ ] `hi(x)` & `lo(x)` not handled (functions)
