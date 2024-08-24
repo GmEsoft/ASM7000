@@ -2,11 +2,10 @@
 
 	ORG	0F000H
 
-;¨	** = errors
 
 ;=====	TMS-7000 Op-Codes
 
-	NOP			;00	** 01
+	NOP			;00
 	IDLE			;01
 	EINT			;05
 	DINT			;06
@@ -177,7 +176,7 @@
 	SWAP	A		;B7
 	PUSH	A		;B8
 	POP	A		;B9
-	DJNZ	A,$		;BA FE	** BA FD
+	DJNZ	A,$		;BA FE
 	DECD	A		;BB
 	RR	A		;BC
 	RRC	A		;BD
@@ -194,7 +193,7 @@
 	SWAP	B		;C7
 	PUSH	B		;C8
 	POP	B		;C9
-	DJNZ	B,$		;CA FE	** CA FD
+	DJNZ	B,$		;CA FE
 	DECD	B		;CB
 	RR	B		;CC
 	RRC	B		;CD
@@ -233,31 +232,31 @@
 	JNE	$		;E6 FE
 	JNC	$		;E7 FE
 	JL	$		;E7 FE
-	TRAP	23		;E8	** FF
-	TRAP	22		;E9	** FE
-	TRAP	21		;EA	** ..
-	TRAP	20		;EB	**
-	TRAP	19		;EC	**
-	TRAP	18		;ED	**
-	TRAP	17		;EE	**
-	TRAP	16		;EF	**
+	TRAP	23		;E8
+	TRAP	22		;E9
+	TRAP	21		;EA
+	TRAP	20		;EB
+	TRAP	19		;EC
+	TRAP	18		;ED
+	TRAP	17		;EE
+	TRAP	16		;EF
 
-	TRAP	15		;F0	**
-	TRAP	14		;F1	**
-	TRAP	13		;F2	**
-	TRAP	12		;F3	**
-	TRAP	11		;F4	**
-	TRAP	10		;F5	**
-	TRAP	9		;F6	**
-	TRAP	8		;F7	**
-	TRAP	7		;F8	**
-	TRAP	6		;F9	**
-	TRAP	5		;FA	**
-	TRAP	4		;FB	**
-	TRAP	3		;FC	**
-	TRAP	2		;FD	**
-	TRAP	1		;FE	**
-	TRAP	0		;FF	** E8
+	TRAP	15		;F0
+	TRAP	14		;F1
+	TRAP	13		;F2
+	TRAP	12		;F3
+	TRAP	11		;F4
+	TRAP	10		;F5
+	TRAP	9		;F6
+	TRAP	8		;F7
+	TRAP	7		;F8
+	TRAP	6		;F9
+	TRAP	5		;FA
+	TRAP	4		;FB
+	TRAP	3		;FC
+	TRAP	2		;FD
+	TRAP	1		;FE
+	TRAP	0		;FF
 
 
 ;=====	Assembler Pseudo-Ops
@@ -265,13 +264,69 @@
 	BYTE	18,52,86,>78	;12 34 56 78
 	DATA	4660,>5678	;12 34 56 78
 	TEXT	'1234'		;31 32 33 34
+	DB	18,'4V',>78	;12 34 56 78
+	DW	1234H,5678H	;12 34 56 78
+;	BYTE	-85		;AB !! TODO: unary ops, negative bytes !!
+;	DATA	-21555		;AB CD !! TODO: unary ops !!
 
 
 ;=====	Expressions
 
 	BYTE	4-2+1		;03
 	BYTE	4-2-1		;01	** 03
-	DB	'X'-20H+40H
+	DB	'X'-20H+40H	;78
+	DB	55H & 5AH	;50
+	DB	55H | 5AH	;5F
+	DB	5AH >> 4	;05
+	DB	0AH << 4	;A0
+	DW	5AA5H >> 4	;05 AA
+	DW	5AA5H << 4	;AA 50
+
+
+	ASSERT_EQUAL	4-2+1		, >03
+	ASSERT_EQUAL	4-2-1		, >01
+	ASSERT_EQUAL	'X'-20H+40H	, >78
+	ASSERT_EQUAL	55H & 5AH	, >50
+	ASSERT_EQUAL	55H | 5AH	, >5F
+	ASSERT_EQUAL	5AH >> 4	, >05
+	ASSERT_EQUAL	0AH << 4	, >A0
+	ASSERT_EQUAL	5AA5H >> 4	, >05AA
+	ASSERT_EQUAL	5AA5H << 4	, >AA50
+
+;=====	Functions
+
+HI	FUNC	x,(x>>8)
+LO	FUNC	x,(x&>FF)
+
+	DB	HI(>1234)	;12
+	DB	LO(>1234)	;34
+
+	ASSERT_EQUAL	HI(>1234)	, >12
+	ASSERT_EQUAL	LO(>1234)	, >34
+
+;=====	Conditionals
+
+COND1	EQU	1
+COND2	EQU	0
+
+	IF	COND1
+LBL1	 EQU	$
+	 IF	COND2
+	  ERROR	'COND1=1 && COND2=1'
+	 ELSE
+LBL2	 EQU	$
+	 ENDIF
+	ELSE
+	 ERROR	'COND1=0 before COND2'
+	 IF	COND2
+	  ERROR	'COND1=0 && COND2=1'
+	 ELSE
+	  ERROR	'COND1=0 && COND2=0'
+	 ENDIF
+	 ERROR	'COND1=0 after COND2'
+	ENDIF
+
+	DATA	LBL1,LBL2
+
 
 	END
-

@@ -8,3 +8,6 @@ CTS256A*
 /mk*.bat
 /test_*.bat
 /vcvars32.bat
+/*.tws
+/README.md
+/backup.bat

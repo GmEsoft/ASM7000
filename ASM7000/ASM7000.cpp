@@ -4,6 +4,7 @@
 #include <sstream>
 #include <vector>
 #include <map>
+#include <stack>
 #include <string>
 #include <cstdarg>
 #include <time.h>
@@ -13,21 +14,141 @@ using namespace std;
 typedef unsigned short word;
 typedef unsigned char  byte;
 
-typedef map< string, word > symbols_t; // TODO: map< string, Arg >
-typedef symbols_t::const_iterator symbolptr_t;
+const char title[] = "** TMS-7000 Tiny Assembler - v0.3.0-alpha - (C) 2024 GmEsoft, All rights reserved. **";
 
-const char title[] = "** TMS-7000 tiny assembler - v0.2.1-alpha - (C) 2024 GmEsoft, All rights reserved. **";
-
-const char help[] = "Usage: ASM7000 -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]\n";
+const char help[] =
+	"Usage:   ASM7000 [options] -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]\n"
+	"         -I:inputfile[.asm[   input source file\n"
+	"         -O:outputfile[.cim]  output object file\n"
+	"         -L:listing[.lst]     listing file\n"
+	"Options: -NC  no compatibility warning\n"
+	"         -ND- enable debug output\n"
+	"         -NE  no output to stderr\n"
+	"         -NH  no header in listing\n"
+	"         -NN  no line numbers in listing\n"
+	"         -NW  no warning\n"
+	;
 
 word pc = 0;
 int pass;
-symbols_t symbols;
-vector<string> errors;
+
+#define DEBUG_MSGS 0
+
+#define _DEBUG_ if ( DEBUG_MSGS )
+
+/////// OPTIONS ///////////////////////////////////////////////////////////////
+
+struct Options
+{
+	bool nocompatwarning;
+	bool nowarning;
+	bool nodebug;
+	bool list;
+	bool clist;
+	bool listall;
+	bool nolist;
+	bool noheader;
+	bool nolinenum;
+	bool nocerr;
+	bool page;
+
+
+	Options()
+	: nocompatwarning( false )
+	, nowarning( false )
+	, nodebug( !DEBUG_MSGS )
+	, list( true )
+	, clist( false )
+	, listall( false )
+	, nolist( false )
+	, noheader( false )
+	, nolinenum( false )
+	, nocerr( false )
+	, page( true )
+	{}
+};
+
+stack< Options > optstack;
+
+Options options;
+
+
+/////// UTILITIES /////////////////////////////////////////////////////////////
+
+/** Reference counter for classes sharing common resources.
+ *
+ * Those classes must derive from this one.
+ * Plus:
+ * - The copy constructor must call this one in its initializers list;
+ * - The destructor must call delRef() and release the shared resources
+ *   if delRef() returned true;
+ * - The assignment operator must call setRef() and release the old shared
+ *   resources if setRef() returned true, before assigning the new shared
+ *   resources from the other object.
+ *
+ */
+class RefCounter
+{
+protected:
+	RefCounter()
+	: ref_( new size_t( 1 ) )
+	{
+	}
+
+	// Called by copy constructor in derived classes.
+	// Missing doing that will lead to problems !!
+	RefCounter( const RefCounter &other )
+	: ref_( other.ref_ )
+	{
+		addRef();
+	}
+
+	// Called by operator=() in derived classes;
+	// if returning true, the old pointers
+	// must be deleted.
+	bool setRef( const RefCounter &other )
+	{
+		bool ret = delRef();
+		ref_ = other.ref_;
+		addRef();
+		return ret;
+	}
+
+	virtual ~RefCounter()
+	{
+		// delRef() called in derived class !!
+	}
+
+	// Called by destructor in devived classes;
+	// if returning true, the old pointers
+	// must be deleted.
+	bool delRef()
+	{
+		bool ret;
+		if ( ret = ( ref_ && !--*ref_ ) )
+		{
+			delete ref_;
+			ref_ = 0;
+		}
+		return ret;
+	}
+private:
+	void addRef()
+	{
+		ref_ && ++*ref_;
+	}
+
+	size_t *ref_;
+};
+
+
+
+/////// ARGS //////////////////////////////////////////////////////////////////
 
 enum ArgType
 {
 	ARG_NONE = 0,
+	ARG_UNDEF,
 	ARG_IMM,
 	ARG_EFFEC,
 	ARG_DIR,
@@ -39,13 +160,13 @@ enum ArgType
 	ARG_B,
 	ARG_ST,
 	ARG_TEXT,
-	ARG_DATE,
-	ARG_TIME
+	ARG_DUP
 };
 
 const char* argtypes[] =
 {
 	"NONE",
+	"UNDEF",
 	"IMM",
 	"EFFEC",
 	"DIR",
@@ -57,8 +178,7 @@ const char* argtypes[] =
 	"B",
 	"ST",
 	"TEXT",
-	"DATE",
-	"TIME"
+	"DUP"
 };
 
 struct Arg
@@ -66,10 +186,181 @@ struct Arg
 	ArgType type;
 	word	data;
 	string	str;
+	string	text;
 };
+
+
+
+/////// SOURCE ////////////////////////////////////////////////////////////////
+
+class Source_I
+{
+public:
+	virtual ~Source_I()
+	{
+	}
+
+	virtual string getline() = 0;
+
+	virtual bool operator!() = 0;
+
+	operator bool()
+	{
+		return !!*this;
+	}
+
+	virtual void rewind() = 0;
+
+	virtual size_t linenum() = 0;
+
+	virtual string getname() = 0;
+
+	virtual string gettype() = 0;
+};
+
+
+class FileSource : public Source_I
+{
+public:
+	FileSource( const string &name )
+	{
+		pIn_ = new ifstream( name.data() );
+		fail_ = !*pIn_;
+		num_ = 0;
+		name_ = name;
+	}
+
+	virtual ~FileSource()
+	{
+		delete pIn_;
+	}
+
+	virtual string getline()
+	{
+		fail_ = !pIn_->getline( buf_, sizeof buf_ );
+		if ( fail_ )
+			return "";
+		++num_;
+		return buf_;
+	}
+
+	virtual bool operator!()
+	{
+		return fail_;
+	}
+
+	virtual void rewind()
+	{
+		pIn_->clear();
+		pIn_->seekg(0, ios::beg);
+		num_ = 0;
+	}
+
+	virtual size_t linenum()
+	{
+		return num_;
+	}
+
+	virtual string getname()
+	{
+		return name_;
+	}
+
+	virtual string gettype()
+	{
+		return "FILE";
+	}
+
+private:
+	string name_;
+	char buf_[255];
+	ifstream *pIn_;
+	bool fail_;
+	int num_;
+};
+
+
+class Source : public Source_I, protected RefCounter
+{
+public:
+	Source()
+	: source_( 0 )
+	{
+	}
+
+	Source( const string &name )
+	: source_( new FileSource( name ) )
+	{
+	}
+
+	Source( const Source &other )
+	: RefCounter( other )
+	, source_( other.source_ )
+	{
+	}
+
+	virtual ~Source()
+	{
+		if ( delRef() )
+		{
+			_DEBUG_ cerr << "~Source(): delete " << source_->getname() << endl;
+			delete source_;
+		}
+	}
+
+	Source &operator=( const Source &other )
+	{
+		if ( setRef( other ) )
+		{
+			_DEBUG_ cerr << "operator=(): delete " << source_->getname() << endl;
+			delete source_;
+		}
+
+		source_ = other.source_;
+
+		return *this;
+	}
+
+	virtual string getline()
+	{
+		return source_->getline();
+	}
+
+	virtual bool operator!()
+	{
+		return !*source_;
+	}
+
+	virtual void rewind()
+	{
+		source_->rewind();
+	}
+
+	virtual size_t linenum()
+	{
+		return source_->linenum();
+	}
+
+	virtual string getname()
+	{
+		return source_->getname();
+	}
+
+	virtual string gettype()
+	{
+		return source_->gettype();
+	}
+
+private:
+	Source_I *source_;
+};
+
+
 
 #define enum_pair( A, B ) ( ( (A) << 4 ) | (B) )
 
+
+/////// STRINGS ///////////////////////////////////////////////////////////////
 
 char* timeStr()
 {
@@ -102,9 +393,18 @@ vector<string> split( string str, const string &sep )
 		cmt = cmt || ( !quot && *p == ';' );
 		while ( *p && ( cmt || sep.find( *p ) == string::npos ) )
 		{
+			bool esc = false;
 			do
 			{
-				if ( quot )
+				if ( esc )
+				{
+					esc = false;
+				}
+				else if ( *p == '\\' )
+				{
+					esc = true;
+				}
+				else if ( quot )
 				{
 					if ( !*p || quot == *p )
 						quot = 0;
@@ -113,6 +413,8 @@ vector<string> split( string str, const string &sep )
 				{
 					quot = *p;
 				}
+
+
 				if ( quot )
 					++p;
 			}
@@ -179,233 +481,712 @@ string touppernotquoted( const string& str )
 	return ret;
 }
 
-void error( const char* format, ... )
+
+/////// MESSAGES //////////////////////////////////////////////////////////////
+
+class Log
 {
-	static char buf[80];
-	if ( pass == 2 )
+
+	vector<string> errorsLog;
+	vector<string> warningsLog;
+	vector<string> infoLog;
+	vector<string> debugLog;
+	bool enabled_, debug_, warning_;
+	char buf[256];
+
+public:
+	Log()
+	: debug_( false ), warning_( true ), enabled_( true )
+	{}
+
+	void setEnabled( bool flag )
 	{
-		va_list args;
-		va_start( args, format );
-		vsprintf_s( buf, sizeof buf, format, args );
-		va_end( args );
-		errors.push_back( buf );
+		enabled_ = flag;
+	}
+
+	void setDebug( bool flag )
+	{
+		debug_ = flag;
+	}
+
+	void setWarning( bool flag )
+	{
+		warning_ = flag;
+	}
+
+	void error( const char* format, ... )
+	{
+		if ( enabled_ )
+		{
+			va_list args;
+			va_start( args, format );
+			vsprintf_s( buf, sizeof buf, format, args );
+			va_end( args );
+			errorsLog.push_back( buf );
+		}
+	}
+
+	void warn( const char* format, ... )
+	{
+		if ( enabled_ && warning_ )
+		{
+			va_list args;
+			va_start( args, format );
+			vsprintf_s( buf, sizeof buf, format, args );
+			va_end( args );
+			warningsLog.push_back( buf );
+		}
+	}
+
+	void info( const char* format, ... )
+	{
+		if ( enabled_ )
+		{
+			va_list args;
+			va_start( args, format );
+			vsprintf_s( buf, sizeof buf, format, args );
+			va_end( args );
+			infoLog.push_back( buf );
+		}
+	}
+
+	void debug( const char* format, ... )
+	{
+		if ( enabled_ && debug_ )
+		{
+			va_list args;
+			va_start( args, format );
+			vsprintf_s( buf, sizeof buf, format, args );
+			va_end( args );
+			debugLog.push_back( buf );
+		}
+	}
+
+	void writeTo( ostream &ostr)
+	{
+		for ( int i=0; i<errorsLog.size(); ++i )
+			ostr << "*** Error: " << errorsLog[i] << endl;
+		for ( int i=0; i<warningsLog.size(); ++i )
+			ostr << "*** Warning: " << warningsLog[i] << endl;
+		for ( int i=0; i<infoLog.size(); ++i )
+			ostr << "*** " << infoLog[i] << endl;
+		for ( int i=0; i<debugLog.size(); ++i )
+			ostr << "*** Debug: " << debugLog[i] << endl;
+	}
+
+	bool isWarning()
+	{
+		return !warningsLog.empty() || !errorsLog.empty();
+	}
+
+	size_t getErrorsCount()
+	{
+		return errorsLog.size();
+	}
+
+	size_t getWarningsCount()
+	{
+		return warningsLog.size();
+	}
+
+	void clear()
+	{
+		errorsLog.clear();
+		warningsLog.clear();
+		infoLog.clear();
+		debugLog.clear();
+	}
+
+};
+
+extern Log log;
+
+
+/////// SYMBOLS ///////////////////////////////////////////////////////////////
+
+typedef map< string, Arg > 			symbols_t;
+typedef symbols_t::iterator 		symbolptr_t;
+typedef deque< symbols_t >			symstack_t;
+typedef symstack_t::iterator 		symstackptr_t;
+
+symstack_t symstack;
+
+void beginSymbols()
+{
+	symstack.push_front( symbols_t() );
+}
+
+void endSymbols()
+{
+	symstack.pop_front();
+}
+
+Arg &getSymbol( const string &name )
+{
+	static Arg nosym = { ARG_UNDEF, 0xFFFF, "", "" };
+	for ( symstackptr_t it = symstack.begin(); it != symstack.end(); ++it )
+	{
+		symbolptr_t itsym = it->find( name );
+		if ( itsym != it->end() )
+			return itsym->second;
+	}
+	return nosym;
+}
+
+void addSymbol( const string &name, ArgType type, word data, const string &str, const string &text )
+{
+	if ( symstack.empty() )
+	{
+		log.error( "BAD: Symbols stack empty !!!" );
+	}
+	else
+	{
+		Arg sym = { type, data, str, text };
+		if ( symstack.front().find( name ) != symstack.front().end() ) // is local ?
+			symstack.front()[name] = sym;
+		else
+			symstack.back()[name] = sym;
 	}
 }
+
+void addLocalSymbol( const string &name, ArgType type, word data, const string &str, const string &text )
+{
+	if ( symstack.empty() )
+	{
+		log.error( "BAD: Symbols stack empty !!!" );
+	}
+//	else if ( symstack.size() == 1 )
+//	{
+//		log.error( "BAD: No local symbols map !!!" );
+//	}
+	else
+	{
+		Arg sym = { type, data, str, text };
+		symstack.front()[name] = sym;
+	}
+}
+
+void addSymbol( const string &name, const Arg &arg )
+{
+	if ( symstack.empty() )
+	{
+		log.error( "BAD: Symbols stack empty !!!" );
+	}
+	else
+	{
+		if ( symstack.front().find( name ) != symstack.front().end() ) // is local ?
+			symstack.front()[name] = arg;
+		else
+			symstack.back()[name] = arg;
+	}
+}
+
+void addLocalSymbol( const string &name, const Arg &arg )
+{
+	if ( symstack.empty() )
+	{
+		log.error( "BAD: Symbols stack empty !!!" );
+	}
+//	else if ( symstack.size() == 1 )
+//	{
+//		log.error( "BAD: No local symbols map !!!" );
+//	}
+	else
+	{
+		symstack.front()[name] = arg;
+	}
+}
+
+
+/////// FUNCTIONS /////////////////////////////////////////////////////////////
+
+class Function
+{
+public:
+	Function()
+	{}
+
+	Function( const string &name, const vector< string > &def )
+	{
+		if ( name.empty() )
+		{
+			log.error( "Missing function name" );
+		}
+		else if ( !def.size() )
+		{
+			log.error( "Missing function definition for %s", name.data() );
+		}
+		else
+		{
+			name_ = name;
+			for ( int i=0; i<def.size()-1; ++i )
+			{
+				params_.push_back( touppernotquoted( def[i] ) );
+			}
+			expr_ = touppernotquoted( def.back() );
+			log.debug( "Function %s = %s", name_.data(), expr_.data() );
+		}
+	}
+
+	string name_;
+	vector< string > params_;
+	string expr_;
+};
+
+typedef map< string, Function > FunctionSeq_t;
+typedef FunctionSeq_t::const_iterator FunctionPtr_t;
+
+FunctionSeq_t functions;
+
+
+/////// ARGS //////////////////////////////////////////////////////////////////
+
+class Parser
+{
+public:
+	Parser( const string &p_expr )
+	: expr( p_expr ), len( p_expr.size() ), p( 0 )
+	{
+	}
+
+	void skipblk()
+	{
+		while ( p < len && ( expr[p] == ' ' || expr[p] == '\t' ) )
+			++p;
+	}
+
+	string parsename()
+	{
+		string ret;
+		skipblk();
+		while ( p < len )
+		{
+			char c = expr[p];
+			if ( c == '_' || c == '$' || isalnum( c ) )
+			{
+				++p;
+				ret += c;
+				continue;
+			}
+			break;
+		}
+		return ret;
+	}
+
+	word parsenum( int radix )
+	{
+		word bin = 0;
+		word dec = 0;
+		word hex = 0;
+
+		skipblk();
+
+		while ( p < len )
+		{
+			word dig = 0;
+			char c = expr[p];
+			if ( isdigit( c ) )
+				dig = c - '0';
+			else if ( c >= 'A' && c <= 'F' )
+			{
+				dig = c - 'A' + 10;
+				if ( c == 'B' && radix == 0 )
+					radix = 2;
+			}
+			else if ( c == 'H' )
+			{
+				radix = 16;
+				++p;
+				break;
+			}
+			else
+			{
+				break;
+			}
+
+			if ( c != 'B' )
+				bin = ( bin << 1 ) + dig;
+			dec = 10 * dec + dig;
+			hex = ( hex << 4 ) + dig;
+
+			++p;
+		}
+
+		switch ( radix )
+		{
+		case 2:
+			return bin;
+		case 10:
+			return dec;
+		case 16:
+			return hex;
+		default:
+			return dec;
+		}
+	}
+
+	Arg parsevalue()
+	{
+		Arg ret = { ARG_IMM, 0xFFFF, expr, "" };
+		skipblk();
+		if ( p < len )
+		{
+			char c = expr[p];
+			if ( c == '>' )
+			{
+				++p;
+				ret.data = parsenum( 16 );
+			}
+			else if ( isdigit( c ) )
+			{
+				ret.data = parsenum( 0 );
+			}
+			else if ( c == '(' )
+			{
+				++p;
+				ret = parse();
+				skipblk();
+				if ( p < len && expr[p] == ')' )
+					++p;
+			}
+			else if ( c == '"' || c == '\'' )
+			{
+				++p;
+				bool esc = false, first = true;
+
+				while ( p < len && ( esc || expr[p] != c ) )
+				{
+					char ch = expr[p++];
+
+					if ( esc )
+					{
+						esc = false;
+					}
+					else if ( ch == '\\' )
+					{
+						esc = true;
+						continue;
+					}
+
+					if ( first )
+						first = false, ret.data = ch;
+
+					ret.text += ch;
+				}
+
+				if ( p < len )
+					++p;
+
+				ret.type = ARG_TEXT;
+				log.debug( "Text: [%s]", ret.text.data() );
+			}
+			else if ( c == '_' || c == '$' || isalpha( c ) )
+			{
+				string name = parsename();
+				if ( name == "$" )
+					ret.data = pc;
+				else
+				{
+					Arg sym = getSymbol( name );
+
+					if ( sym.type != ARG_UNDEF )
+						ret = sym;
+					else
+					{
+						FunctionPtr_t itFunc = functions.find( name );
+						if ( itFunc != functions.end() )
+						{
+							beginSymbols();
+							const Function &func = itFunc->second;
+							skipblk();
+							bool paren = !eof() && expr[p] == '(';
+
+							if ( paren )
+								++p;
+
+							for ( int i=0; i<func.params_.size() ; ++i )
+							{
+								skipblk();
+								if ( i>0 )
+								{
+									if ( eof() || expr[p] != ',' )
+										break;
+									++p;
+								}
+								Arg arg = parsevalue();
+								addLocalSymbol( func.params_[i], arg );
+								log.debug( "%s = (%s)%04X", func.params_[i].data(), argtypes[arg.type], arg.data );
+							}
+
+							skipblk();
+							if ( paren )
+							{
+								if ( !eof() && expr[p] == ')' )
+									++p;
+							}
+
+							Parser parser( func.expr_ );
+							ret = parser.parse();
+							log.debug( "%s = (%s)%04X", func.expr_.data(), argtypes[ret.type], ret.data );
+							if ( !parser.eof() )
+								log.error( "Error evaluating function %s: %s", name.data(), func.expr_.data() );
+
+							endSymbols();
+
+						}
+						else
+							log.error( "Symbol not found: [%s]", name.data() );
+					}
+				}
+			}
+			else
+			{
+				log.error( "Unsupported token: [%c]", c) ;
+			}
+		}
+		return ret;
+	}
+
+	Arg parse()
+	{
+		Arg ret = parsevalue();
+		skipblk();
+		while ( p < len )
+		{
+			char c = expr[p];
+			if ( c == '+' )
+			{
+				++p;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data += rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data += rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( c == '-' )
+			{
+				++p;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data -= rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data -= rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( c == '&' )
+			{
+				++p;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data &= rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data &= rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( c == '|' )
+			{
+				++p;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data |= rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data |= rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( expr.substr( p, 2 ) == "<<" )
+			{
+				p += 2;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data <<= rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data <<= rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( expr.substr( p, 2 ) == ">>" )
+			{
+				p += 2;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+					ret.data >>= rhs.data;
+				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
+				{
+					ret.type = rhs.type;
+					ret.data >>= rhs.data;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( expr.substr( p, 3 ) == "DUP" )
+			{
+				p += 3;
+				Arg rhs = parsevalue();
+				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
+				{
+					ret.text = string( ret.data, rhs.data );
+					ret.type = ARG_DUP;
+				}
+				else
+					log.error( "%c: incompatible types: %s and %s",
+						c, argtypes[ret.type], argtypes[rhs.type] );
+			}
+			else if ( c == ')' )
+			{
+				break;
+			}
+			else
+			{
+				log.error( "[%c]: unsupported operator in [%s]", c, expr.data() ) ;
+				break;
+			}
+
+			skipblk();
+		}
+		return ret;
+	}
+
+	bool eof()
+	{
+		return p >= len;
+	}
+
+	static Arg parse( const string &arg )
+	{
+		Arg ret = { ARG_NONE, 0xFFFF, arg, "" };
+
+		size_t size = arg.size();
+
+		if ( size > 0 )
+		{
+			Parser parser( arg );
+			ret = parser.parse();
+			if ( !parser.eof() )
+				log.error( "Parse error: %s", arg.data() );
+		}
+		else
+		{
+			log.error( "Missing literal", arg.data() );
+		}
+		return ret;
+	}
+
+	static Arg getarg( const string &arg )
+	{
+		Arg ret;
+		ret.type = ARG_NONE;
+		ret.data = 0;
+		ret.str  = arg;
+
+		size_t size = arg.size();
+
+		if ( arg == "A" )
+		{
+			ret.type = ARG_A;
+		}
+		else if ( arg == "B" )
+		{
+			ret.type = ARG_B;
+		}
+		else if ( arg == "ST" )
+		{
+			ret.type = ARG_ST;
+		}
+		else if ( arg[0] == '%' )
+		{
+			if ( size > 3 && arg.find( "(B)" ) == arg.size() - 3 )
+			{
+				ret.type = ARG_EFFEC;
+				ret.data = parse( arg.substr( 1, arg.size() - 4 ) ).data;
+			}
+			else
+			{
+				ret.type = ARG_IMM;
+				ret.data = parse( arg.substr( 1 ) ).data;
+			}
+		}
+		else if ( size > 2 && arg[0] == '*' )
+		{
+			ret.type = ARG_INDIR;
+			ret.data = parse( arg.substr( 1 ) ).data;
+		}
+		else if ( arg[0] == '@' )
+		{
+			if ( arg.find( "(B)" ) == arg.size() - 3 )
+			{
+				ret.type = ARG_INDEX;
+				ret.data = parse( arg.substr( 1, arg.size() - 4 ) ).data;
+			}
+			else
+			{
+				ret.type = ARG_DIR;
+				ret.data = parse( arg.substr( 1 ) ).data;
+			}
+		}
+		else
+		{
+			ret = parse( arg );
+		}
+		return ret;
+	}
+
+private:
+	const string &expr;
+	const size_t len;
+	size_t p;
+};
+
+
+
 
 bool chkargs( const string& op, const vector< Arg > &args, size_t num )
 {
 	if ( args.size() < num )
-		error( "%s: Too few args %d, expecting %d", op.data(), args.size(), num );
+		log.error( "%s: Too few args %d, expecting %d", op.data(), args.size(), num );
 	else if ( args.size() > num )
-		error( "%s: Too many args %d, expecting %d", op.data(), args.size(), num );
+		log.error( "%s: Too many args %d, expecting %d", op.data(), args.size(), num );
 	return args.size() == num;
 }
-
-word parsebin( const string &arg )
-{
-	word ret = 0;
-	for ( int i=0; i<arg.size() && ( arg[i] | 1 ) == '1'; ++i )
-		ret = ( ret << 1 ) | ( arg[i] & 1 );
-	return ret;
-}
-
-word parselit( const string &arg ) // TODO: Arg parselit( const string &arg )
-{
-	word ret = 0xFFFF;
-	size_t size = arg.size();
-
-	if ( size > 0 )
-	{
-		size_t pos;
-		char first = arg[0];
-		char last  = arg[arg.size() - 1];
-		if ( size > 2 && first == '"' && last == '"' )
-		{
-			//cerr << "TEXT: [" << arg << "]" << endl;
-		}
-		else if ( size > 3 && first == '\'' && last == '\'' && arg.substr( 2, size-3 ).find('\'') == string::npos )
-		{
-			//cerr << "TEXT: [" << arg << "]" << endl;
-		}
-		else if ( ( pos = arg.find( '+' ) ) != string::npos && !( first == '\'' && pos == 1 ) )
-		{
-			//cerr << arg << ": [" << arg.substr( 0, pos ) << "]+[" << arg.substr( pos + 1 ) << "]" << endl;
-			ret = parselit( arg.substr( 0, pos ) )
-				+ parselit( arg.substr( pos + 1 ) );
-		}
-		else if ( ( pos = arg.find( '-' ) ) != string::npos && !( first == '\'' && pos == 1 ) )
-		{
-			//cerr << arg << ": [" << arg.substr( 0, pos ) << "]-[" << arg.substr( pos + 1 ) << "]" << endl;
-			ret = parselit( arg.substr( 0, pos ) )
-				- parselit( arg.substr( pos + 1 ) );
-		}
-		else if ( size > 2 && first == '\'' && last == '\'' )
-		{
-			//cerr << "[" << arg << "]" << endl;
-			ret = ( size > 2 && arg[1] == '\\' ) ? arg[2] : arg[1];
-		}
-		else if ( first == '$' )
-		{
-			ret = pc;
-			if ( size > 1 )
-			{
-				if ( arg[1] == '+' )
-					ret += parselit( arg.substr( 2 ) );
-				else if ( arg[1] == '-' )
-					ret -= parselit( arg.substr( 2 ) );
-				else
-					error( "Error in expression: [%s]", arg.data() );
-			}
-		}
-		else if ( first == '>' )
-		{
-			stringstream sstr( arg.substr( 1 ) );
-			sstr >> hex >> ret;
-		}
-		else if ( first == '?' )
-		{
-			ret = parsebin( arg.substr( 1 ) );
-		}
-		else if ( isdigit( first ) && last == 'H' )
-		{
-			stringstream sstr( arg );
-			sstr >> hex >> ret;
-		}
-		else if ( isdigit( first ) && last == 'B' )
-		{
-			ret = parsebin( arg.substr( 1 ) );
-		}
-		else if ( isdigit( first ) )
-		{
-			stringstream sstr( arg );
-			sstr >> ret;
-		}
-		else
-		{
-			symbolptr_t sym = symbols.find( arg );
-			if ( sym != symbols.end() )
-			{
-				ret = sym->second;
-			}
-			else
-			{
-				error( "Symbol not found: [%s]", arg.data() );
-			}
-		}
-	}
-	else
-	{
-		error( "Missing literal", arg.data() );
-	}
-	return ret;
-}
-
-Arg getarg( const string &arg )
-{
-	Arg ret;
-	ret.type = ARG_NONE;
-	ret.data = 0;
-	ret.str  = arg;
-
-	size_t size = arg.size();
-
-	if ( arg == "A" )
-	{
-		ret.type = ARG_A;
-	}
-	else if ( arg == "B" )
-	{
-		ret.type = ARG_B;
-	}
-	else if ( arg == "ST" )
-	{
-		ret.type = ARG_ST;
-	}
-	else if ( arg == "DATE" )
-	{
-		ret.type = ARG_DATE;
-	}
-	else if ( arg == "TIME" )
-	{
-		ret.type = ARG_TIME;
-	}
-	else if ( arg[0] == '%' )
-	{
-		if ( size > 3 && arg.find( "(B)" ) == arg.size() - 3 )
-		{
-			ret.type = ARG_EFFEC;
-			ret.data = parselit( arg.substr( 1, arg.size() - 4 ) );
-		}
-		else
-		{
-			ret.type = ARG_IMM;
-			ret.data = parselit( arg.substr( 1 ) );
-		}
-	}
-	else if ( size > 2 && arg[0] == '*' && arg[1] == 'R' && isdigit( arg[2] ) )
-	{
-		ret.type = ARG_INDIR;
-		ret.data = parselit( arg.substr( 2 ) );
-	}
-	else if ( size > 2 && arg[0] == '*' )
-	{
-		ret.type = ARG_INDIR;
-		ret.data = parselit( arg.substr( 1 ) );
-	}
-	else if ( arg[0] == '@' )
-	{
-		if ( arg.find( "(B)" ) == arg.size() - 3 )
-		{
-			ret.type = ARG_INDEX;
-			ret.data = parselit( arg.substr( 1, arg.size() - 4 ) );
-		}
-		else
-		{
-			ret.type = ARG_DIR;
-			ret.data = parselit( arg.substr( 1 ) );
-		}
-	}
-	else if ( size > 1 && arg[0] == 'R' && isdigit( arg[1] ) )
-	{
-		ret.type = ARG_REG;
-		ret.data = parselit( arg.substr( 1 ) );
-	}
-	else if ( size > 1 && arg[0] == 'P' && isdigit( arg[1] ) )
-	{
-		ret.type = ARG_PORT;
-		ret.data = parselit( arg.substr( 1 ) ) | 0x100;
-	}
-	/*else if ( arg[0] == '\'' || ( size > 1 && arg[0] == '-' && arg[1] == '\'' ) )
-	{
-		ret.type = ARG_TEXT;
-	}
-	*/else
-	{
-		ret.data = parselit( arg );
-		ret.type = ( arg[0] == '>' || arg[0] == '?' || arg[0] == '$' || arg[0] == '\'' || isdigit( arg[0] ) ) ? ARG_IMM
-				 : ret.data < 0x100 ? ARG_REG
-				 : ret.data < 0x200 ? ARG_PORT
-				 : ARG_IMM;
-		//if ( arg == "COUNT" )
-		//	cerr << arg << ":" << hex << ret.data << "/" << ret.type << endl;
-	}
-	return ret;
-}
-
 
 word getimmediate( const Arg &arg )
 {
 	if ( arg.type != ARG_IMM )
-		error( "Expecting immediate: [%s]", arg.str.data() );
+		log.error( "Expecting immediate: [%s] (%s)", arg.str.data(), argtypes[arg.type] );
 	return arg.data;
 }
 
 word getbyte( const Arg &arg )
 {
 	if ( arg.type != ARG_IMM && arg.type != ARG_REG )
-		error( "Bad byte type: [%s]", arg.str.data() );
+		log.error( "Bad byte type: [%s]=%04X (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
 	else if ( short( arg.data ) < -128 || arg.data > 255 )
-		error( "Byte range error: [%s]", arg.str.data() );
+		log.error( "Byte range error: [%s]=%04X (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
 	return arg.data & 0xFF;
 }
 
@@ -425,7 +1206,7 @@ word getnum( const Arg &arg )
 	if ( arg.type == ARG_PORT )
 		ret -= 0x100;
 	if ( ret > 0xFF )
-		error( "Number range error: [%s]", arg.str.data() );
+		log.error( "Number range error: [%s]=%d (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
 	return ret & 0xFF;
 }
 
@@ -434,8 +1215,7 @@ word getoffset( word addr, const Arg &arg )
 	short offset = arg.data - addr;
 	if ( offset < -128 || offset > 127 )
 	{
-		error( "Offset range error: [%s]", arg.str.data() );
-//		return 0xFE;
+		log.error( "Offset range error: [%s] (%s)", arg.str.data(), argtypes[arg.type] );
 	}
 	return offset & 0xFF;
 }
@@ -489,7 +1269,7 @@ void ass_mov( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s (%s,%s)",
+			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
 				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
@@ -521,7 +1301,7 @@ void ass_movd( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s (%s,%s)",
+			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
 				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
@@ -557,7 +1337,7 @@ void ass_movp( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s (%s,%s)",
+			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
 				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
@@ -575,9 +1355,11 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 	{
 		switch( args[0].type )
 		{
-		case ARG_DIR:
 		case ARG_IMM: // extension
 		case ARG_REG: // extension
+			if ( !options.nocompatwarning )
+				log.warn( "Got type %s, assuming DIR: %s=%04X", argtypes[args[0].type], args[0].str.data(), args[0].data );
+		case ARG_DIR:
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
 			instr.push_back( getlow( args[0] ) );
@@ -592,7 +1374,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 			instr.push_back( getlow( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
 			instr.push_back( getlow( args[0] ) );
@@ -633,7 +1415,7 @@ bool ass_unop( const string op, vector< Arg > &args, int num, int bits, vector< 
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 	return ok;
@@ -690,7 +1472,7 @@ bool ass_binop( const string op, vector< Arg > &args, int num, int bits, vector<
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s (%s,%s)",
+			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
 				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
@@ -724,7 +1506,7 @@ bool ass_binop_p( const string op, vector< Arg > &args, int num, int bits, vecto
 			instr.push_back( getnum( args[1] ) );
 			break;
 		default:
-			error( "Bad arg(s): %s %s,%s (%s,%s)",
+			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
 				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
 		}
 	}
@@ -744,7 +1526,7 @@ void ass_jump( const string op, vector< Arg > &args, int bits, vector< byte > &i
 			instr.push_back( getoffset( pc+2, args[0] ) );
 			break;
 		default:
-			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 }
@@ -758,10 +1540,10 @@ void ass_trap( const string op, vector< Arg > &args, vector< byte > &instr )
 		switch( args[0].type )
 		{
 		case ARG_IMM:
-			instr.push_back( 0xE8 + args[0].data );
+			instr.push_back( 0xFF - args[0].data );
 			break;
 		default:
-			error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 		}
 	}
 }
@@ -791,7 +1573,7 @@ void ass_pushpop( const string op, vector< Arg > &args, int bits, vector< byte >
 				instr.push_back( bits == 0x08 ? 0x0E : 0x08 );
 				break;
 			default:
-				error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+				log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
 			}
 		}
 	}
@@ -805,6 +1587,11 @@ void ass_implicit( const string op, vector< Arg > &args, int bits, vector< byte 
 	}
 }
 
+
+/////// MAIN //////////////////////////////////////////////////////////////////
+
+Log log;
+
 void main( int argc, const char* argp[] )
 {
 	cerr << title << endl << endl;
@@ -813,10 +1600,6 @@ void main( int argc, const char* argp[] )
 	const string stab = "\t";
 
 	string infile, outfile, lstfile;
-
-	bool noheader = false;
-	bool nolinenum = false;
-	bool nocerr = false;
 
 	for ( int i=1; i<argc; ++i )
 	{
@@ -844,16 +1627,27 @@ void main( int argc, const char* argp[] )
 				lstfile = p;
 				break;
 			case 'N':
-				switch ( toupper( *p ) )
+				c = toupper( *p );
+				++p;
+				switch ( toupper( c ) )
 				{
-				case 'H':
-					noheader = true;
+				case 'C':
+					options.nocompatwarning = ( *p != '-' );
 					break;
-				case 'N':
-					nolinenum = true;
+				case 'D':
+					options.nodebug = ( *p != '-' );
 					break;
 				case 'E':
-					nocerr = true;
+					options.nocerr = ( *p != '-' );
+					break;
+				case 'H':
+					options.noheader = ( *p != '-' );
+					break;
+				case 'N':
+					options.nolinenum = ( *p != '-' );
+					break;
+				case 'W':
+					options.nowarning = ( *p != '-' );
 					break;
 				}
 				break;
@@ -880,7 +1674,8 @@ void main( int argc, const char* argp[] )
 		lstfile += ".lst";
 	}
 
-	ifstream in( infile.data() );
+
+	Source in( infile );
 
 	if ( !in )
 	{
@@ -916,7 +1711,7 @@ void main( int argc, const char* argp[] )
 
 	ostream &ostr = !lstfile.empty() ? lst : cout;
 
-	if ( !noheader )
+	if ( !options.noheader )
 	{
 		ostr << title << endl << endl;
 
@@ -930,23 +1725,78 @@ void main( int argc, const char* argp[] )
 		ostr  << endl;
 	}
 
+	beginSymbols();
+
+	for ( int i=0; i<0x100; ++i )
+	{
+		stringstream sstr;
+		sstr << "R" << i;
+		string label = sstr.str();
+		Arg arg = { ARG_REG, i, label, "" };
+		addSymbol( label, arg );
+	}
+
+	for ( int i=0; i<0x100; ++i )
+	{
+		stringstream sstr;
+		sstr << "P" << i;
+		string label = sstr.str();
+		Arg arg = { ARG_PORT, i + 0x100, label, "" };
+		addSymbol( label, arg );
+	}
+
+	Arg argDate = { ARG_TEXT, 0, "DATE", "DD-MM-YYYY" };
+	addSymbol( "DATE", argDate );
+
+	Arg argTime = { ARG_TEXT, 0, "DATE", "HH:MM:SS" };
+	addSymbol( "TIME", argTime );
+
+
 	for ( pass=1; pass<=2; ++pass )
 	{
+		log.setEnabled( pass == 2 );
+		log.setDebug( !options.nodebug );
+		log.setWarning( !options.nowarning );
+
 		cerr << "Pass: " << pass << endl;
 		pc = 0;
 		bool end = false;
-		int num = 1;
 
-		in.clear();
-		in.seekg(0, ios::beg);
+		in.rewind();
 
 		int errcount = 0;
+		int warncount = 0;
 
-		while( in.getline( buf, sizeof buf ) )
+		stack< Source > sources;
+		stack< int > conditions;
+		bool condit = true;
+
+		functions.clear();
+
+		while( true )
 		{
-			string 	line = buf;
+			string 	line = in.getline();
 
-			errors.clear();
+			bool isline = in;
+
+			if ( !isline )
+			{
+				if (!sources.empty() )
+				{
+					//log.info( "END INCLUDE" );
+					in = sources.top();
+					log.info( "File: %s ***", in.getname().data() );
+					sources.pop();
+					endSymbols();
+				}
+				else
+				{
+					log.warn( "No END statement" );
+					end = true;
+				}
+			}
+
+			int num = in.linenum();
 
 			vector< string > tokens = split( line, "\t :" );
 
@@ -956,7 +1806,7 @@ void main( int argc, const char* argp[] )
 
 			for ( int i=0; i<tokens.size(); ++i )
 			{
-				string token = tokens[i];
+				const string token = tokens[i];
 				if ( token[0] == ';' )
 				{
 					comment = token;
@@ -964,496 +1814,757 @@ void main( int argc, const char* argp[] )
 				}
 				else
 				{
-					token = touppernotquoted( token );
 					switch ( i )
 					{
 					case 0:
-						label = token;
+						label = touppernotquoted( token );
 						if ( !label.empty() && label[label.size()-1] == ':' )
 							label = label.substr( 0, label.size()-1 );
 						break;
 					case 1:
-						op = token;
+						op = touppernotquoted( token );
 						break;
 					case 2:
 						argstr = token;
 						break;
 					default:
-						argstr += token;
+						argstr += " " + token;
 						break;
 					}
 				}
 			}
 
 			vector< string > argstrs = split( argstr, "," );
-
 			size_t nargs = argstrs.size();
 
-			vector< Arg > args( nargs );
-			for ( int i=0; i<nargs; ++i )
-			{
-				args[i] = getarg( argstrs[i] );
-			}
-
 			word addr = pc;
-
-			if ( !label.empty() )
-			{
-				if ( op == "AORG" || op == "ORG" )
-				{
-					if ( chkargs( op, args, 1 ) )
-					{
-						addr = getimmediate( args[0] );
-						if ( op == "AORG" || op == "ORG" )
-							pc = addr;
-					}
-				}
-				else if ( op == "EQU" )
-				{
-					if ( chkargs( op, args, 1 ) )
-					{
-						switch ( args[0].type )
-						{
-						case ARG_IMM:
-						case ARG_REG:
-						case ARG_PORT:
-							addr = args[0].data;
-							break;
-						default:
-							error( "Bad addressing mode: [%s]", args[0].str.data() );
-						}
-					}
-				}
-
-				symbolptr_t sym = symbols.find( label );
-				if ( pass == 2 )
-				{
-					if ( sym != symbols.end() && sym->second != addr )
-						error ( "Multiple definition: [%s]", label.data() );
-				}
-				symbols[label] = addr;
-			}
-
 			vector< byte > instr;
 
-			bool first = true;
+			bool outaddr = false;
+			bool listblock = true;
+			bool oldcond = condit;
 
-			// ============= AORG
-			if ( op == "AORG" || op == "ORG" )	// AORG aaaa
+			if ( op == "IF" || op == "$IF" || op == "COND" )
 			{
-				if ( label.empty() )
+				conditions.push( condit );
+				if ( nargs == 1 )
 				{
-					if ( chkargs( op, args, 1 ) )
+					if ( condit )
 					{
-						addr = pc = getimmediate( args[0] );
+						Arg arg = Parser::getarg( touppernotquoted( argstrs[0] ) );
+						condit = bool( arg.data );
 					}
 				}
-			}
-			// ============= MOVE
-			else if ( op == "MOV" ) // MOV ss,dd
-			{
-				ass_mov( op, args, instr );
-			}
-			else if ( op == "MOVD" ) // MOVD ssss,dddd
-			{
-				ass_movd( op, args, instr );
-			}
-			else if ( op == "MOVP" ) // MOVP ss,dd
-			{
-				ass_movp( op, args, instr );
-			}
-			// ============= MEMORY ACCESS
-			else if ( op == "LDA" ) // LDA @aaaa[(B)],dd
-			{
-				ass_xaddr( op, args, 0x0A, instr );
-			}
-			else if ( op == "STA" ) // STA dd,@aaaa[(B)]
-			{
-				ass_xaddr( op, args, 0x0B, instr );
-			}
-			else if ( op == "BR" ) // BR @aaaa[(B)] (long jump)
-			{
-				ass_xaddr( op, args, 0x0C, instr );
-			}
-			else if ( op == "CMPA" ) // CMPA @aaaa[(B)]
-			{
-				ass_xaddr( op, args, 0x0D, instr );
-			}
-			else if ( op == "CALL" ) // CALL aaaa
-			{
-				ass_xaddr( op, args, 0x0E, instr );
-			}
-			// ============= IMPLICIT (no operands)
-			else if ( op == "NOP"  )  // NOP
-			{
-				ass_implicit( op, args, 0x01, instr );
-			}
-			else if ( op == "IDLE"  ) // IDLE
-			{
-				ass_implicit( op, args, 0x01, instr );
-			}
-			else if ( op == "EINT" ) // EINT
-			{
-				ass_implicit( op, args, 0x05, instr );
-			}
-			else if ( op == "DINT" ) // DINT
-			{
-				ass_implicit( op, args, 0x06, instr );
-			}
-			else if ( op == "SETC" ) // SETC
-			{
-				ass_implicit( op, args, 0x07, instr );
-			}
-			else if ( op == "STSP" ) // STSP
-			{
-				ass_implicit( op, args, 0x09, instr );
-			}
-			else if ( op == "RETS" ) // RETS (from subroutine)
-			{
-				ass_implicit( op, args, 0x0A, instr );
-			}
-			else if ( op == "RETI" ) // RETI (from interrupt)
-			{
-				ass_implicit( op, args, 0x0B, instr );
-			}
-			else if ( op == "LDSP" ) // LDSP
-			{
-				ass_implicit( op, args, 0x0D, instr );
-			}
-			else if ( op == "TSTA" || op == "CLRC" ) // TSTA/CLRC
-			{
-				ass_implicit( op, args, 0xB0, instr );
-			}
-			else if ( op == "TSTB" ) // TSTB
-			{
-				ass_implicit( op, args, 0xC1, instr );
-			}
-			// ============= UNARY OPS
-			else if ( op == "DEC"  ) // DEC xx
-			{
-				ass_unop( op, args, 1, 0x02, instr );
-			}
-			else if ( op == "INC"  ) // INC xx
-			{
-				ass_unop( op, args, 1, 0x03, instr );
-			}
-			else if ( op == "INV"  ) // INV xx
-			{
-				ass_unop( op, args, 1, 0x04, instr );
-			}
-			else if ( op == "CLR"  ) // CLR xx
-			{
-				ass_unop( op, args, 1, 0x05, instr );
-			}
-			else if ( op == "XCHB" ) // XCHB xx
-			{
-				ass_unop( op, args, 1, 0x06, instr );
-			}
-			else if ( op == "SWAP" ) // SWAP xx
-			{
-				ass_unop( op, args, 1, 0x07, instr );
-			}
-			else if ( op == "DECD" ) // DECD Rnn
-			{
-				ass_unop( op, args, 1, 0x0B, instr );
-			}
-			else if ( op == "RR"   ) // RR xx
-			{
-				ass_unop( op, args, 1, 0x0C, instr );
-			}
-			else if ( op == "RRC"  ) // RRC xx
-			{
-				ass_unop( op, args, 1, 0x0D, instr );
-			}
-			else if ( op == "RL"   ) // RL xx
-			{
-				ass_unop( op, args, 1, 0x0E, instr );
-			}
-			else if ( op == "RLC"  ) // RLC xx
-			{
-				ass_unop( op, args, 1, 0x0F, instr );
-			}
-			// ============= BINARY OPERATIONS
-			else if ( op == "AND" ) // AND yy,xx
-			{
-				ass_binop( op, args, 2, 0x03, instr );
-			}
-			else if ( op == "OR"  ) // OR yy,xx
-			{
-				ass_binop( op, args, 2, 0x04, instr );
-			}
-			else if ( op == "XOR" ) // XOR yy,xx
-			{
-				ass_binop( op, args, 2, 0x05, instr );
-			}
-			else if ( op == "ADD" ) // ADD yy,xx
-			{
-				ass_binop( op, args, 2, 0x08, instr );
-			}
-			else if ( op == "ADC" ) // ADC yy,xx
-			{
-				ass_binop( op, args, 2, 0x09, instr );
-			}
-			else if ( op == "SUB" ) // SUB yy,xx
-			{
-				ass_binop( op, args, 2, 0x0A, instr );
-			}
-			else if ( op == "SBB" ) // SBB yy,xx
-			{
-				ass_binop( op, args, 2, 0x0B, instr );
-			}
-			else if ( op == "MPY" ) // MPY yy,xx
-			{
-				ass_binop( op, args, 2, 0x0C, instr );
-			}
-			else if ( op == "CMP" ) // CMP yy,xx
-			{
-				ass_binop( op, args, 2, 0x0D, instr );
-			}
-			else if ( op == "DAC" ) // DAC yy,xx
-			{
-				ass_binop( op, args, 2, 0x0E, instr );
-			}
-			else if ( op == "DSB" ) // DSB yy,xx
-			{
-				ass_binop( op, args, 2, 0x0F, instr );
-			}
-			// ============= BINARY OPERATIONS ON PORTS
-			else if ( op == "ANDP" ) // ANDP yy,Pnn
-			{
-				ass_binop_p( op, args, 2, 0x03, instr );
-			}
-			else if ( op == "ORP" ) // ORP yy,Pnn
-			{
-				ass_binop_p( op, args, 2, 0x04, instr );
-			}
-			else if ( op == "XORP" ) // ORP yy,Pnn
-			{
-				ass_binop_p( op, args, 2, 0x05, instr );
-			}
-			// ============= SHORT JUMPS
-			else if ( op == "JMP" )                // JMP aaaa
-			{
-				ass_jump( op, args, 0x00, instr );
-			}
-			else if ( op == "JN" || op == "JLT"  ) // JN/LT aaaa (jump if negative/less than)
-			{
-				ass_jump( op, args, 0x01, instr );
-			}
-			else if ( op == "JZ" || op == "JEQ"  ) // JZ/JEQ aaaa (jump if zero/equal)
-			{
-				ass_jump( op, args, 0x02, instr );
-			}
-			else if ( op == "JC" || op == "JHS"  ) // JC/?JHS aaaa (jump if carry/?higher or same)
-			{
-				ass_jump( op, args, 0x03, instr );
-			}
-			else if ( op == "JP" || op == "JGT"  ) // JP/JGT aaaa (jump if positive/greater than)
-			{
-				ass_jump( op, args, 0x04, instr );
-			}
-			else if ( op == "JPZ" || op == "JGE" ) // JPZ/JGE aaaa (jump if positive or zero/greater or equal)
-			{
-				ass_jump( op, args, 0x05, instr );
-			}
-			else if ( op == "JNZ" || op == "JNE" ) // JNZ/JNZ aaaa (jump if !zero/!equal)
-			{
-				ass_jump( op, args, 0x06, instr );
-			}
-			else if ( op == "JNC" || op == "JL"  ) // JNC/JL aaaa (jump if !carry/?lower)
-			{
-				ass_jump( op, args, 0x07, instr );
-			}
-			else if ( op == "DJNZ" ) 			   // DJNZ R,aaaa (jump if !carry/?lower)
-			{
-				if ( ass_unop( op, args, 2, 0x0A, instr ) )
+				else if ( nargs == 0 )
 				{
-					instr.push_back( getoffset( pc+3, args[1] ) );
+					log.error( "IF: missing argument" );
+				}
+				else
+				{
+					log.error( "IF: too many argument" );
 				}
 			}
-			// ============= BIT TESTS & SHORT JUMPS
-			else if ( op == "BTJO" ) // BTJO %yy,xx,aaaa (jump if any bit of xx masked by %yy is one)
+			else if ( op == "ELSE" || op == "$ELSE" )
 			{
-				if ( ass_binop( op, args, 3, 0x06, instr ) )
+				if ( !conditions.empty() )
 				{
-					instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
-				}
-			}
-			else if ( op == "BTJOP" ) // BTJOP %yy,Pnn,aaaa (jump if any bit of Pnn masked by %yy is one)
-			{
-				if ( ass_binop_p( op, args, 3, 0x06, instr ) )
-				{
-					instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
-				}
-			}
-			else if ( op == "BTJZ" ) // BTJZ %yy,xx,aaaa (jump if any bit of xx masked by %yy is zero)
-			{
-				if ( ass_binop( op, args, 3, 0x07, instr ) )
-				{
-					instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
-				}
-			}
-			else if ( op == "BTJZP" ) // BTJZP %yy,Pnn,aaaa (jump if any bit of Pnn masked by %yy is zero)
-			{
-				if ( ass_binop_p( op, args, 3, 0x07, instr ) )
-				{
-					instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
-				}
-			}
-			// ============= PUSH/POP
-			else if ( op == "PUSH" ) // PUSH xx
-			{
-				ass_pushpop( op, args, 0x08, instr );
-			}
-			else if ( op == "POP" ) // POP xx
-			{
-				ass_pushpop( op, args, 0x09, instr );
-			}
-			// ============= SPECIAL
-			else if ( op == "TRAP" ) // POP xx
-			{
-				ass_trap( op, args, instr );
-			}
-			// ============= DATA
-			else if ( op == "BYTE" || op == "DB" ) // BYTE x,... (8-bit data)
-			{
-				if ( !args.size() )
-					error( "Missing byte value(s)" );
-				for ( int i=0; i<args.size(); ++i )
-				{
-					instr.push_back( getbyte( args[i] ) );
-				}
-			}
-			else if ( op == "TEXT" ) // TEXT "..."
-			{
-				if ( chkargs( op, args, 1 ) )
-				{
-					bool quot = false, neg = false, esc = false;
-					const string &text = args[0].str;
-					for ( int i=0; i<text.size(); ++i )
+					if ( nargs == 0 )
 					{
-						char c = text[i];
-						if ( !quot )
+						condit = conditions.top() && !condit;
+					}
+					else
+					{
+						log.error( "IF: too many argument" );
+					}
+				}
+				else
+				{
+					log.error( "ELSE without IF" );
+				}
+			}
+			else if ( op == "ENDIF" || op == "$ENDIF" || op == "$ENDC" )
+			{
+				if ( !conditions.empty() )
+				{
+					if ( nargs == 0 )
+					{
+						condit = conditions.top();
+						conditions.pop();
+					}
+					else
+					{
+						log.error( "IF: too many argument" );
+					}
+				}
+				else
+				{
+					log.error( "ENDIF" );
+				}
+			}
+			else if ( condit )
+			{
+
+				if ( op == "COPY" || op == "INCLUDE" || op == "GET" )
+				{
+					if ( nargs == 1 )
+					{
+						sources.push( in );
+						in = Source( argstrs[0] );
+						if ( in )
 						{
-							if ( !i && c == '-' )
-								neg = true;
-							else if ( c == '\'' )
-								quot = true;
+							log.info( "File: %s ***", in.getname().data() );
+							beginSymbols();
 						}
 						else
 						{
-							if ( !esc && c == '\\' )
+							log.error( "Can't open include file %s", argstrs[0].data() );
+							in = sources.top();
+							sources.pop();
+						}
+					}
+					else
+					{
+						log.error( "Expecting 1 arg %s", argstr.data() );
+					}
+				}
+				else if ( op == "SAVE" )
+				{
+					optstack.push( options );
+				}
+				else if ( op == "RESTORE" )
+				{
+					if ( optstack.empty() )
+					{
+						log.error( "No saved options" );
+					}
+					else
+					{
+						options = optstack.top();
+						optstack.pop();
+					}
+				}
+				else if ( op == "CPU" )
+				{
+					log.debug( "%s %s ignored", op.data(), argstr.data() );
+				}
+				else if ( op == "PAGE" )
+				{
+					if ( nargs == 1 )
+					{
+						string arg = touppernotquoted( argstrs[0] );
+						options.page = arg == "ON" || arg == "1";
+					}
+					else
+					{
+						log.error( "Expecting 1 arg %s", argstr.data() );
+					}
+				}
+				else if ( op == "LISTING" )
+				{
+					if ( nargs == 1 )
+					{
+						string arg = touppernotquoted( argstrs[0] );
+						options.list = arg == "ON" || arg == "1";
+					}
+					else
+					{
+						log.error( "Expecting 1 arg %s", argstr.data() );
+					}
+				}
+				else if ( op == "FUNCTION" || op == "FUNC" )
+				{
+					if ( nargs == 0 )
+					{
+						log.error( "Missing arg %s", argstr.data() );
+					}
+					else if ( label.empty() )
+					{
+						log.error( "Missing function label" );
+					}
+					else if ( functions.find( label ) != functions.end() )
+					{
+						log.error( "Duplicate function definition: %s", label.data() );
+					}
+					else
+					{
+						Function func( label, argstrs );
+						functions[label] = func;
+					}
+				}
+				else if ( op == "MACRO" )
+				{
+					log.warn( "%s %s currently not handled", op.data(), argstr.data() );
+				}
+				else
+				{
+					vector< Arg > args( nargs );
+					for ( int i=0; i<nargs; ++i )
+					{
+						args[i] = Parser::getarg( touppernotquoted( argstrs[i] ) );
+					}
+
+					ArgType type = ARG_IMM;
+
+					if ( !label.empty() )
+					{
+						if ( op == "AORG" || op == "ORG" )
+						{
+							if ( chkargs( op, args, 1 ) )
 							{
-								esc = true;
+								addr = getimmediate( args[0] );
+								if ( op == "AORG" || op == "ORG" )
+									pc = addr;
 							}
-							else if ( !esc && c == '\'' )
+						}
+						else if ( op == "EQU" )
+						{
+							if ( chkargs( op, args, 1 ) )
 							{
-								quot = false;
-								break;
+								switch ( args[0].type )
+								{
+								case ARG_IMM:
+								case ARG_REG:
+								case ARG_PORT:
+									addr = args[0].data;
+									type = args[0].type;
+									//log.error( "debug: set [%s] (%s=%04x)", args[0].str.data(), argtypes[type], addr );
+									break;
+								default:
+									log.error( "Bad addressing mode: [%s] (%s)", args[0].str.data(), argtypes[args[0].type] );
+								}
 							}
-							else
+						}
+
+						Arg sym = getSymbol( label );
+						if ( pass == 2 )
+						{
+							if ( sym.type != ARG_UNDEF && sym.data != addr )
+								log.error ( "Multiple definition: [%s] (%s=%04X)",
+									label.data(), argtypes[sym.type], sym.data );
+						}
+						Arg arg = { type, addr, label, "" };
+						addSymbol( label, arg );
+					}
+
+
+					bool first = true;
+
+					outaddr = true;
+
+					// ============= AORG
+					if ( op == "AORG" || op == "ORG" )	// AORG aaaa
+					{
+						if ( label.empty() )
+						{
+							if ( chkargs( op, args, 1 ) )
 							{
-								esc = false;
-								instr.push_back( byte( c ) );
+								addr = pc = getimmediate( args[0] );
 							}
 						}
 					}
+					// ============= MOVE
+					else if ( op == "MOV" ) // MOV ss,dd
+					{
+						ass_mov( op, args, instr );
+					}
+					else if ( op == "MOVD" ) // MOVD ssss,dddd
+					{
+						ass_movd( op, args, instr );
+					}
+					else if ( op == "MOVP" ) // MOVP ss,dd
+					{
+						ass_movp( op, args, instr );
+					}
+					// ============= MEMORY ACCESS
+					else if ( op == "LDA" ) // LDA @aaaa[(B)],dd
+					{
+						ass_xaddr( op, args, 0x0A, instr );
+					}
+					else if ( op == "STA" ) // STA dd,@aaaa[(B)]
+					{
+						ass_xaddr( op, args, 0x0B, instr );
+					}
+					else if ( op == "BR" ) // BR @aaaa[(B)] (long jump)
+					{
+						ass_xaddr( op, args, 0x0C, instr );
+					}
+					else if ( op == "CMPA" ) // CMPA @aaaa[(B)]
+					{
+						ass_xaddr( op, args, 0x0D, instr );
+					}
+					else if ( op == "CALL" ) // CALL aaaa
+					{
+						ass_xaddr( op, args, 0x0E, instr );
+					}
+					// ============= IMPLICIT (no operands)
+					else if ( op == "NOP"  )  // NOP
+					{
+						ass_implicit( op, args, 0x00, instr );
+					}
+					else if ( op == "IDLE"  ) // IDLE
+					{
+						ass_implicit( op, args, 0x01, instr );
+					}
+					else if ( op == "EINT" ) // EINT
+					{
+						ass_implicit( op, args, 0x05, instr );
+					}
+					else if ( op == "DINT" ) // DINT
+					{
+						ass_implicit( op, args, 0x06, instr );
+					}
+					else if ( op == "SETC" ) // SETC
+					{
+						ass_implicit( op, args, 0x07, instr );
+					}
+					else if ( op == "STSP" ) // STSP
+					{
+						ass_implicit( op, args, 0x09, instr );
+					}
+					else if ( op == "RETS" ) // RETS (from subroutine)
+					{
+						ass_implicit( op, args, 0x0A, instr );
+					}
+					else if ( op == "RETI" ) // RETI (from interrupt)
+					{
+						ass_implicit( op, args, 0x0B, instr );
+					}
+					else if ( op == "LDSP" ) // LDSP
+					{
+						ass_implicit( op, args, 0x0D, instr );
+					}
+					else if ( op == "TSTA" || op == "CLRC" ) // TSTA/CLRC
+					{
+						ass_implicit( op, args, 0xB0, instr );
+					}
+					else if ( op == "TSTB" ) // TSTB
+					{
+						ass_implicit( op, args, 0xC1, instr );
+					}
+					// ============= UNARY OPS
+					else if ( op == "DEC"  ) // DEC xx
+					{
+						ass_unop( op, args, 1, 0x02, instr );
+					}
+					else if ( op == "INC"  ) // INC xx
+					{
+						ass_unop( op, args, 1, 0x03, instr );
+					}
+					else if ( op == "INV"  ) // INV xx
+					{
+						ass_unop( op, args, 1, 0x04, instr );
+					}
+					else if ( op == "CLR"  ) // CLR xx
+					{
+						ass_unop( op, args, 1, 0x05, instr );
+					}
+					else if ( op == "XCHB" ) // XCHB xx
+					{
+						ass_unop( op, args, 1, 0x06, instr );
+					}
+					else if ( op == "SWAP" ) // SWAP xx
+					{
+						ass_unop( op, args, 1, 0x07, instr );
+					}
+					else if ( op == "DECD" ) // DECD Rnn
+					{
+						ass_unop( op, args, 1, 0x0B, instr );
+					}
+					else if ( op == "RR"   ) // RR xx
+					{
+						ass_unop( op, args, 1, 0x0C, instr );
+					}
+					else if ( op == "RRC"  ) // RRC xx
+					{
+						ass_unop( op, args, 1, 0x0D, instr );
+					}
+					else if ( op == "RL"   ) // RL xx
+					{
+						ass_unop( op, args, 1, 0x0E, instr );
+					}
+					else if ( op == "RLC"  ) // RLC xx
+					{
+						ass_unop( op, args, 1, 0x0F, instr );
+					}
+					// ============= BINARY OPERATIONS
+					else if ( op == "AND" ) // AND yy,xx
+					{
+						ass_binop( op, args, 2, 0x03, instr );
+					}
+					else if ( op == "OR"  ) // OR yy,xx
+					{
+						ass_binop( op, args, 2, 0x04, instr );
+					}
+					else if ( op == "XOR" ) // XOR yy,xx
+					{
+						ass_binop( op, args, 2, 0x05, instr );
+					}
+					else if ( op == "ADD" ) // ADD yy,xx
+					{
+						ass_binop( op, args, 2, 0x08, instr );
+					}
+					else if ( op == "ADC" ) // ADC yy,xx
+					{
+						ass_binop( op, args, 2, 0x09, instr );
+					}
+					else if ( op == "SUB" ) // SUB yy,xx
+					{
+						ass_binop( op, args, 2, 0x0A, instr );
+					}
+					else if ( op == "SBB" ) // SBB yy,xx
+					{
+						ass_binop( op, args, 2, 0x0B, instr );
+					}
+					else if ( op == "MPY" ) // MPY yy,xx
+					{
+						ass_binop( op, args, 2, 0x0C, instr );
+					}
+					else if ( op == "CMP" ) // CMP yy,xx
+					{
+						ass_binop( op, args, 2, 0x0D, instr );
+					}
+					else if ( op == "DAC" ) // DAC yy,xx
+					{
+						ass_binop( op, args, 2, 0x0E, instr );
+					}
+					else if ( op == "DSB" ) // DSB yy,xx
+					{
+						ass_binop( op, args, 2, 0x0F, instr );
+					}
+					// ============= BINARY OPERATIONS ON PORTS
+					else if ( op == "ANDP" ) // ANDP yy,Pnn
+					{
+						ass_binop_p( op, args, 2, 0x03, instr );
+					}
+					else if ( op == "ORP" ) // ORP yy,Pnn
+					{
+						ass_binop_p( op, args, 2, 0x04, instr );
+					}
+					else if ( op == "XORP" ) // ORP yy,Pnn
+					{
+						ass_binop_p( op, args, 2, 0x05, instr );
+					}
+					// ============= SHORT JUMPS
+					else if ( op == "JMP" )                // JMP aaaa
+					{
+						ass_jump( op, args, 0x00, instr );
+					}
+					else if ( op == "JN" || op == "JLT"  ) // JN/LT aaaa (jump if negative/less than)
+					{
+						ass_jump( op, args, 0x01, instr );
+					}
+					else if ( op == "JZ" || op == "JEQ"  ) // JZ/JEQ aaaa (jump if zero/equal)
+					{
+						ass_jump( op, args, 0x02, instr );
+					}
+					else if ( op == "JC" || op == "JHS"  ) // JC/?JHS aaaa (jump if carry/?higher or same)
+					{
+						ass_jump( op, args, 0x03, instr );
+					}
+					else if ( op == "JP" || op == "JGT"  ) // JP/JGT aaaa (jump if positive/greater than)
+					{
+						ass_jump( op, args, 0x04, instr );
+					}
+					else if ( op == "JPZ" || op == "JGE" ) // JPZ/JGE aaaa (jump if positive or zero/greater or equal)
+					{
+						ass_jump( op, args, 0x05, instr );
+					}
+					else if ( op == "JNZ" || op == "JNE" ) // JNZ/JNZ aaaa (jump if !zero/!equal)
+					{
+						ass_jump( op, args, 0x06, instr );
+					}
+					else if ( op == "JNC" || op == "JL"  ) // JNC/JL aaaa (jump if !carry/?lower)
+					{
+						ass_jump( op, args, 0x07, instr );
+					}
+					else if ( op == "DJNZ" ) 			   // DJNZ R,aaaa (jump if !carry/?lower)
+					{
+						if ( ass_unop( op, args, 2, 0x0A, instr ) )
+						{
+							instr.push_back( getoffset( pc+instr.size()+1, args[1] ) );
+						}
+					}
+					// ============= BIT TESTS & SHORT JUMPS
+					else if ( op == "BTJO" ) // BTJO %yy,xx,aaaa (jump if any bit of xx masked by %yy is one)
+					{
+						if ( ass_binop( op, args, 3, 0x06, instr ) )
+						{
+							instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
+						}
+					}
+					else if ( op == "BTJOP" ) // BTJOP %yy,Pnn,aaaa (jump if any bit of Pnn masked by %yy is one)
+					{
+						if ( ass_binop_p( op, args, 3, 0x06, instr ) )
+						{
+							instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
+						}
+					}
+					else if ( op == "BTJZ" ) // BTJZ %yy,xx,aaaa (jump if any bit of xx masked by %yy is zero)
+					{
+						if ( ass_binop( op, args, 3, 0x07, instr ) )
+						{
+							instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
+						}
+					}
+					else if ( op == "BTJZP" ) // BTJZP %yy,Pnn,aaaa (jump if any bit of Pnn masked by %yy is zero)
+					{
+						if ( ass_binop_p( op, args, 3, 0x07, instr ) )
+						{
+							instr.push_back( getoffset( pc+instr.size()+1, args[2] ) );
+						}
+					}
+					// ============= PUSH/POP
+					else if ( op == "PUSH" ) // PUSH xx
+					{
+						ass_pushpop( op, args, 0x08, instr );
+					}
+					else if ( op == "POP" ) // POP xx
+					{
+						ass_pushpop( op, args, 0x09, instr );
+					}
+					// ============= SPECIAL
+					else if ( op == "TRAP" ) // POP xx
+					{
+						ass_trap( op, args, instr );
+					}
+					// ============= DATA
+					else if ( op == "BYTE" ) // BYTE x,... (8-bit data)
+					{
+						if ( !args.size() )
+							log.error( "Missing byte value(s)" );
+						for ( int i=0; i<args.size(); ++i )
+						{
+							instr.push_back( getbyte( args[i] ) );
+						}
+					}
+					else if ( op == "DB" ) // DB x,... (8-bit data)
+					{
+						if ( !options.nocompatwarning )
+							log.warn( "Non-standard DB statement: %s", argstr.data() );
+						if ( !args.size() )
+							log.error( "Missing byte value(s)" );
+						for ( int i=0; i<args.size(); ++i )
+						{
+							const Arg &arg = args[i];
+							switch( arg.type )
+							{
+							case ARG_IMM:
+								instr.push_back( getbyte( arg ) );
+								break;
+							case ARG_DUP:
+								listblock = false;
+							case ARG_TEXT:
+								for ( int p=0; p<arg.text.size(); ++p )
+									instr.push_back( arg.text[p] );
+								break;
+							default:
+								log.error( "Bad arg type: %s", argtypes[arg.type] );
+							}
+
+						}
+					}
+					else if ( op == "DS" ) // DS x,... (8-bit data)
+					{
+						if ( !options.nocompatwarning )
+							log.warn( "Non-standard DB statement: %s", argstr.data() );
+						if ( chkargs( op, args, 1 ) )
+						{
+							int skip = args[0].data;
+							pc += skip;
+						}
+					}
+					else if ( op == "TEXT" ) // TEXT "..."
+					{
+						if ( chkargs( op, args, 1 ) )
+						{
+							const Arg &arg = args[0];
+							switch( arg.type )
+							{
+							case ARG_TEXT:
+								for ( int p=0; p<arg.text.size(); ++p )
+									instr.push_back( arg.text[p] );
+								break;
+							default:
+								log.error( "Bad arg type: %s", argtypes[arg.type] );
+							}
+						}
+					}
+					else if ( op == "DATA" || op == "DW" ) // DATA xxxx,... (16-bit data)
+					{
+						if ( !options.nocompatwarning && op == "DW" )
+							log.warn( "Got DW, assuming DATA: %s", argstr.data() );
+						if ( !args.size() )
+							log.error( "Missing byte value(s)" );
+						for ( int i=0; i<args.size(); ++i )
+						{
+							instr.push_back( gethigh( args[i] ) );
+							instr.push_back( getlow( args[i] ) );
+						}
+					}
+					else if ( op == "EQU" ) // llll EQU xxxx
+					{
+						// no-op
+					}
+					else if ( op == "END" ) // END [aaaa]
+					{
+						end = true;
+					}
+					else if ( op == "ERROR" || op == "WARNING" || op == "MESSAGE" || op == "INFO" ) //
+					{
+						if ( chkargs( op, args, 1 ) )
+						{
+							const Arg &arg = args[0];
+							switch( arg.type )
+							{
+							case ARG_TEXT:
+								if ( op == "ERROR" )
+									log.error( "%s", arg.text.data() );
+								else if ( op == "WARNING" )
+									log.warn( "%s", arg.text.data() );
+								else
+									log.info( "%s", arg.text.data() );
+								break;
+							default:
+								log.error( "Bad arg type: %s", argtypes[arg.type] );
+							}
+						}
+					}
+					else if ( op == "ASSERT_EQUAL" ) //
+					{
+						if ( chkargs( op, args, 2 ) )
+						{
+							const Arg &arg0 = args[0];
+							const Arg &arg1 = args[1];
+							if ( arg0.type == ARG_TEXT && arg1.type == ARG_TEXT )
+							{
+								if ( arg0.text != arg1.text )
+								{
+									log.error( "Assertion failed: %s != %s", arg0.str.data(), arg1.str.data() );
+									log.info( "with %s = '%s'", arg0.str.data(), arg0.text.data() );
+									log.info( " and %s = '%s'", arg1.str.data(), arg1.text.data() );
+								}
+							}
+							else if ( arg0.type != ARG_TEXT && arg1.type != ARG_TEXT )
+							{
+								if ( arg0.data != arg1.data )
+								{
+									log.error( "Assertion failed: %s != %s", arg0.str.data(), arg1.str.data() );
+									log.info( "with %s = %04X", arg0.str.data(), arg0.data );
+									log.info( " and %s = %04X", arg1.str.data(), arg1.data );
+								}
+							}
+							else
+							{
+								log.error( "Assertion failed: type of %s incompatible with type of %s", arg0.str.data(), arg1.str.data() );
+								log.info( "with %s as %s", arg0.str.data(), argtypes[arg0.type] );
+								log.info( " and %s as %s", arg1.str.data(), argtypes[arg1.type] );
+							}
+						}
+					}
+					else if ( op.empty() )
+					{
+						outaddr = false;
+					}
+					else					// Unrecognized op-code
+					{
+						log.error( "Unrecognized op-code: [%s]", op.data() );
+					}
 				}
-			}
-			else if ( op == "DATA" || op == "DW" ) // DATA xxxx,... (16-bit data)
-			{
-				if ( !args.size() )
-					error( "Missing byte value(s)" );
-				for ( int i=0; i<args.size(); ++i )
-				{
-					instr.push_back( gethigh( args[i] ) );
-					instr.push_back( getlow( args[i] ) );
-				}
-			}
-			else if ( op == "EQU" ) // llll EQU xxxx
-			{
-				// no-op
-			}
-			else if ( op == "END" ) // END [aaaa]
-			{
-				end = true;
-			}
-			else if ( !op.empty() ) // Unrecognized op-code
-			{
-				error( "Unrecognized op-code: [%s]", op.data() );
 			}
 
-			if ( pass == 2 )
+			if 	( 	( 	options.listall
+					|| 	(	options.list
+						&& 	( 	options.clist || condit || oldcond )
+						)
+					)
+				&& 	!options.nolist
+				&& 	pass == 2
+				)
 			{
-				stringstream sstr;
-				if ( !nolinenum )
-					sstr << setw( 5 ) << num << ":  ";
-				sstr << hex << uppercase << setfill( '0' );
-				if ( !op.empty() )
-					sstr << setw( 4 ) << addr << "  ";
-				else
-					sstr << "      ";
-				int i;
-				//sstr << instr.size() << ":";
-				for ( i=0; i<instr.size() && i<4; ++i )
-					sstr << setw(2) << int(word(instr[i]));
-				for ( int j=i; j<5; ++j )
-					sstr << "  ";
-				sstr << line << endl;
-				while ( i<instr.size() )
+				if ( isline )
 				{
-					int imax = i+4;
-					addr += 4;
-					if ( !nolinenum )
-						sstr << "        ";
-					sstr << "      ";
-					for ( ; i<instr.size() && i<imax; ++i )
+					stringstream sstr;
+
+					if ( !options.nolinenum )
+						sstr << setw( 5 ) << num << ":  ";
+					sstr << hex << uppercase << setfill( '0' );
+					if ( outaddr )
+						sstr << setw( 4 ) << addr << "  ";
+					else
+						sstr << "      ";
+					int i;
+					//sstr << instr.size() << ":";
+					for ( i=0; i<instr.size() && i<4; ++i )
 						sstr << setw(2) << int(word(instr[i]));
-					sstr << endl;
-				}
+					for ( int j=i; j<5; ++j )
+						sstr << "  ";
+					sstr << line << endl;
+					while ( listblock && i<instr.size() )
+					{
+						int imax = i+4;
+						addr += 4;
+						if ( !options.nolinenum )
+							sstr << "        ";
+						sstr << "      ";
+						for ( ; i<instr.size() && i<imax; ++i )
+							sstr << setw(2) << int(word(instr[i]));
+						sstr << endl;
+					}
 
-				ostr << sstr.str();
-				if ( !errors.empty() )
-				{
-					for ( i=0; i<errors.size(); ++i )
-						ostr << "*** Error: " << errors[i] << endl;
-					if ( !nocerr && !lstfile.empty() && cout != cerr )
+					ostr << sstr.str();
+
+					if ( !options.nocerr && !lstfile.empty() && cout != cerr
+						&& log.isWarning() )
 					{
 						cerr << sstr.str();
-						for ( i=0; i<errors.size(); ++i )
-							cerr << "*** Error: " << errors[i] << endl;
 					}
-					errcount += errors.size();
+
+				}
+
+				log.writeTo( ostr );
+
+				if ( !options.nocerr && !lstfile.empty() && cout != cerr )
+				{
+					log.writeTo( cerr );
 				}
 
 				if ( out )
-					for ( i=0; i<instr.size(); ++i )
+					for ( int i=0; i<instr.size(); ++i )
 						out.put( instr[i] );
 			}
 
-			pc += instr.size();
-			++num;
+			errcount += log.getErrorsCount();
+			warncount += log.getWarningsCount();
 
-			if ( end )
+			log.clear();
+
+			pc += instr.size();
+
+
+			if ( end && sources.empty() )
 				break;
+
 		}
+
 
 		if ( pass == 2 )
 		{
 			stringstream sstr;
-			sstr << setw( 5 ) << errcount << " TOTAL ERROR(S)" << endl;
 
-			ostr << sstr.str();
+			sstr << setw( 5 ) << errcount  << " TOTAL ERROR(S)" << endl;
+			sstr << setw( 5 ) << warncount << " TOTAL WARNING(S)" << endl;
+
+			ostr << endl << sstr.str();
 
 			if ( !lstfile.empty() && cout != cerr )
 			{
 				cerr << sstr.str();
 			}
 		}
-	}
+
+	} // pass
 
 
-	in.close();
 	out.close();
 
 }

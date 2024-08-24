@@ -4,7 +4,7 @@ ASM7000
 Tiny assembler for TMS-7000 / PIC-7000 series
 ---------------------------------------------
 
-Version v0.2.0-alpha
+Version v0.3.0-alpha
 
 Work in progress. This is already viable to assemble the source code
 of the CTS256A-AL2 chip from G.I. without error and without any difference
@@ -16,18 +16,44 @@ Current limitations:
 
 - [x] Fields must be separated by a tab - no spaces allowed;
 - [ ] Macros not supported;
+- [x] Conditional assembly not supported;
 - [ ] No support for linkable object files;
-- [ ] No full support for expressions in constants;
+- [x] No full support for expressions in constants;
 - [x] Decimal and hexadecimal literals supported, but not binary literals;
 - [ ] Generates only a binary core image file, no support yet for hexadecimal output files (Intel HEX, etc.);
 - [x] Symbols not allowed for registers `Rn` and ports `Pn`;
 - [x] Code (mnemonics and pre-defined symbols) must be in upper case.;
-- [ ] No support for `INCLUDE file`.
-- [ ] No support for functions.
+- [x] No support for `INCLUDE file`;
+- [x] No support for functions;
+- [ ] No support for functions with 2 or more args.
 
 
 History
 -------
+
+### v0.3.0-alpha:
+- new Parser class, supporting new operators, parentheses and user-defined functions;
+- fix parsing of expressions `X-Y-Z` evaluated `X-(Y-Z)`;
+- new Help text;
+- String arguments;
+- `INCLUDE/COPY files`;
+- fix quote processing in `split()`;
+- new Log class for messages;
+- new option `-NC`: no compatibility warnings;
+- new option `-ND-`: enable debug messages;
+- new option `-NW`: no warnings;
+- symbols can be EQUated to `Rnn` and `Pnn`;
+- display total # of warnings;
+- new `IF` / `ELSE` / `ENDIF` and synonyms;
+- user-defined functions `name FUNCTION/FUNC arg,expression`;
+- new `SAVE` / `RESTORE` options;
+- new `LISTING ON/OFF`: enable/disable listing;
+- new `DB nn,'text',...` / `DS nnnn` / `DB nnnn DUP(nn)` / `DW nnnn,...`
+- fix `NOP` op-code;
+- fix `DJNZ A/B,offset` wrong offset value;
+- fix `TRAP n` op-codes (reversed);
+- new `ERROR` / `WARNING` / `INFO` / `DEBUG` messages;
+- new `ASSERT_EQUAL x,y`: raise an error if `x` is not equal to `y`.
 
 ### v0.2.1-alpha:
 - allow white spaces in arguments field.
@@ -52,6 +78,7 @@ History
 ### v0.1.0-alpha: 
 - initial commit
 
+
 To compile the assembler
 ------------------------
 
@@ -60,6 +87,93 @@ With Microsoft Visual Studio, execute the following commands to produce the exec
 call /path/to/vcvars32.bat
 cl /EHsc ASM7000.cpp
 ````
+
+To run the assembler
+--------------------
+
+Command syntax:
+````
+ASM7000 [options] -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]
+         -I:inputfile[.asm[   input source file
+         -O:outputfile[.cim]  output object file
+         -L:listing[.lst]     listing file
+Options: -NC  no compatibility warning
+         -ND- enable debug output
+         -NE  no output to stderr
+         -NH  no header in listing
+         -NN  no line numbers in listing
+         -NW  no warning
+````
+
+Assembler syntax
+----------------
+
+'*' following a directive or synonym denotes an extension or a deviation to the original assembler syntax.
+
+### Directives:
+- `      $IF   condition`: Start of a conditional assembly block. Synonyms: `IF`* and `COND`*.
+- `      $ELSE`: Start of the ELSE clause in the conditional assembly block. 
+  Synonym: `ELSE`*.
+- `      $ENDIF`: End the conditional assembly block. Synonyms: `ENDIF`* and `ENDC`*.
+- `      COPY filename`: Insert the contents of the given filename. Synonyms: `INCLUDE`* and `GET`*.
+- `      SAVE`*: Save the current values of the option flags.
+- `      RESTORE`*: Restore the saved values of the option flags.
+- `      CPU  name`*: CPU type (ignored).
+- `      PAGE ON/OFF`*: Page flag (currently unhandled).
+- `      LISTING ON/OFF`*: Listing flag (currently unhandled).
+- `name  FUNCTION [args,...],expr`*: Function definition. Formal arguments in `args,...` and the evaluated 
+  expression in `expr`. Synonym: `FUNC`*.
+- `      ERROR   'message'`*: Generates an error message.
+- `      WARNING 'message'`*: Generates a warning message.
+- `      INFO    'message'`*: Generates an informational message.
+- `      DEBUG   'message'`*: Generates a debug message (printed only if `-nd-` is specified in the
+  command line).
+- `      ASSERT_EQUAL x,y`: raises an error if x and y are not equal.
+
+
+### Pseudo-Ops:
+- `[lbl]  AORG nnnn`: Set the location pointer to `nnnn`. Synonym: `ORG`*.
+- `lbl    EQU  expr`: Define the label `lbl` equal to the value of `expr`.
+- `[lbl]  BYTE nn[,nn...]`: Define a block of bytes `nn[,nn...]`.
+- `[lbl]  DATA nnnn[,nnnn...]`: Define a block of 16-bit words`nn[,nn...]`. MSB first. Synonym: `DW`*.
+- `[lbl]  TEXT [-]'text string'`: Define a text string. If `-` precedes the string, the last value
+  is negated (not yet handled).
+- `[lbl]  DB nn[,nn...][,'text string'...]`*: Define a block of bytes `nn[,nn...]` or text strings.
+- `[lbl]  DB n DUP(byte)`*: Define a of bytes `byte` repeated `n` times.
+- `[lbl]  DS n`*: Bump the location counter by `n` bytes.
+
+### Arguments:
+- `Rnn`: Processor registers. May be aliased using an `EQU` pseudo-op: `FLAGS EQU R10`; `OR %>01,FLAGS`.
+- `Pnn`: Processor I/O ports. May be aliased using an `EQU` pseudo-op: `APORT EQU P4`; `ANDP %>FE,APORT`.
+- `%nn`: Immediate values: `MOVD %>F000,R3`. Can be an expression.
+- `@nn`: Direct long address: `CALL @ENCODE`. Short relative jumps don't use that notation: `JMP LOOP`. 
+  Can be an expression.
+- `@nn(B)`: Direct long address, indexed by B: `LDA @SCT1TB(B)`. Can be an expression.
+- `*nn`: Indirect address via registers pair: `LDA *RULPTR`.  Can be an expression.
+- `*nn(B)`: Indirect address via registers pair, indexed by B: `LDA *TABPTR(B)`.  Can be an expression.
+
+### Literals:
+- `nnn`: Decimal value.
+- `>nn`: Hexadecimal value.
+- `'c'`: Character value.
+- `$`: The value of the location counter.
+- `nnH`*: Hexadecimal value.
+- `bbbbbbbbB`*: Binary value.
+- `DATE`*: The current date as a `TEXT`/`DB` string `MM/DD/YY` (or depending on a specified format, tbd).
+- `TIME`*: The current time as a `TEXT`/`DB` string `HH:MM:SS` (or depending on a specified format, tbd).
+
+### Expressions:
+Operators are evaluated left to right unless a sub-expression is enclosed in parentheses.
+- `nn + expr`: Addition.
+- `nn - expr`: Subtraction.
+- `nn & expr`*: Bitwise AND.
+- `nn | expr`*: Bitwise OR.
+- `nn << expr`*: Left shift.
+- `nn >> expr`*: Right shift.
+- `func(expr)`*: Evaluation of the user-defined function `func` on the parameter value of `expr`.
+
+(to be expanded)
+
 
 Sample session:
 ---------------
@@ -164,9 +278,9 @@ To do next
 - [x] Allow lower case;
 - [x] Allow spaces as field separators;
 - [x] Allow symbols for `Rn` and `Pn`;
-- [ ] Allow expressions;
+- [x] Allow expressions;
 - [ ] Generate Intel HEX format output;
-- [ ] Support `INCLUDE` files.
+- [x] Support `INCLUDE` files.
 - [x] parse binary strings;
 - [x] parse expressions containing + or - (todo: unary '-');
 - [x] parse char literals;
@@ -175,20 +289,21 @@ To do next
 - [x] synonym ORG = AORG;
 - [x] synonym DB = BYTE/TEXT (todo: DB "text");
 - [x] synonym DW = DATA;
-- [ ] Refactor/streamline the parser;
-- [ ] Add DATE and TIME string constants.
+- [x] Refactor/streamline the parser;
+- [ ] Add DATE and TIME string constants;
+- [x] Conditional assembly not supported;
+- [ ] Encapsulate parts of code in C++ classes (in progress).
 
 Known issues
 ------------
-- [ ] parsing of expressions `X-Y+Z` evaluated `X-(Y+Z)`
+- [x] parsing of expressions `X-Y-Z` evaluated `X-(Y-Z)`
 - [x] arguments field containing white space, eg: `mov %10, count`
-- [ ] `DB "string"` not handled
-- [ ] `DB count dup (x)` not handled
-- [ ] `hi(x)` & `lo(x)` not handled (functions)
-- [ ] `STA flags` instead of `STA @flags`
-
-
-
+- [x] `DB "string"` not handled
+- [x] `DB count DUP (x)` not handled
+- [x] `hi(x)` & `lo(x)` not handled (functions)
+- [ ] functions with 2 or more args
+- [ ] `DS` not generating filling zeros in CIM format
+- [ ] unary ops not working
 
 
 GPLv3 License
