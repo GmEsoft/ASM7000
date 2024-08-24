@@ -1,7 +1,10 @@
-/*.bat
 /*.zip
 /*.cim
 /*.lst
 CTS256A*
 /CTS256-SP0256
 /*.err
+/*.TXT
+/mk*.bat
+/test_*.bat
+/vcvars32.bat
