@@ -4,7 +4,7 @@ ASM7000
 Tiny assembler for TMS-7000 / PIC-7000 series
 ---------------------------------------------
 
-Version v0.3.0-alpha
+Version v0.3.0-alpha+DEV
 
 Work in progress. This is already viable to assemble the source code
 of the CTS256A-AL2 chip from G.I. without error and without any difference
@@ -31,14 +31,20 @@ Current limitations:
 History
 -------
 
+### v0.3.0-alpha+dev:
+- new Macro class;
+- new in-line macro REPT.
+
 ### v0.3.0-alpha:
 - new Parser class, supporting new operators, parentheses and user-defined functions;
+- support operators `DUP`, `>>`, `<<`, `&`, `|`;
 - fix parsing of expressions `X-Y-Z` evaluated `X-(Y-Z)`;
 - new Help text;
 - String arguments;
 - `INCLUDE/COPY files`;
 - fix quote processing in `split()`;
 - new Log class for messages;
+- added compatibility warnings for extensions wrt. to the original syntax;
 - new option `-NC`: no compatibility warnings;
 - new option `-ND-`: enable debug messages;
 - new option `-NW`: no warnings;
@@ -123,10 +129,15 @@ Assembler syntax
 - `      LISTING ON/OFF`*: Listing flag (currently unhandled).
 - `name  FUNCTION [args,...],expr`*: Function definition. Formal arguments in `args,...` and the evaluated 
   expression in `expr`. Synonym: `FUNC`*.
-- `      ERROR   'message'`*: Generates an error message.
+- `name  MACRO [args,...]`*: Macro definition. Formal arguments in `args,...` (not yet handled).
+- `      ENDM`*: End of macro definition. (not yet handled).
+- `      REPT times`*: Repeated block macro definition.
+- `      IRP  #var,params`*: Parameters iterator block macro definition. (not yet handled).
+- `      IRPC #str,times`*: String iterator block macro definition. (not yet handled).
+- `      ERROR 'message'`*: Generates an error message.
 - `      WARNING 'message'`*: Generates a warning message.
-- `      INFO    'message'`*: Generates an informational message.
-- `      DEBUG   'message'`*: Generates a debug message (printed only if `-nd-` is specified in the
+- `      INFO 'message'`*: Generates an informational message.
+- `      DEBUG 'message'`*: Generates a debug message (printed only if `-nd-` is specified in the
   command line).
 - `      ASSERT_EQUAL x,y`: raises an error if x and y are not equal.
 

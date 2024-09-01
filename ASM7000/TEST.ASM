@@ -329,4 +329,17 @@ LBL2	 EQU	$
 	DATA	LBL1,LBL2
 
 
+;=====	REPT Macro
+
+	IF	1
+	REPT	3
+	DB	'123'
+	REPT	3
+	DB	'456'
+	ENDM
+	ENDM
+	ENDIF
+
+
 	END
+

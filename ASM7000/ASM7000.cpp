@@ -9,12 +9,9 @@
 #include <cstdarg>
 #include <time.h>
 
-using namespace std;
+#define MACRO 1
 
-typedef unsigned short word;
-typedef unsigned char  byte;
-
-const char title[] = "** TMS-7000 Tiny Assembler - v0.3.0-alpha - (C) 2024 GmEsoft, All rights reserved. **";
+const char title[] = "** TMS-7000 Tiny Assembler - v0.3.0-alpha+dev - (C) 2024 GmEsoft, All rights reserved. **";
 
 const char help[] =
 	"Usage:   ASM7000 [options] -i:InputFile[.asm] -o:OutputFile[.cim] [-l:Listing[.lst]]\n"
@@ -29,12 +26,18 @@ const char help[] =
 	"         -NW  no warning\n"
 	;
 
+
+using namespace std;
+
+typedef unsigned short word;
+typedef unsigned char  byte;
+
 word pc = 0;
 int pass;
 
 #define DEBUG_MSGS 0
 
-#define _DEBUG_ if ( DEBUG_MSGS )
+#define CDBG if ( DEBUG_MSGS ) cerr
 
 /////// OPTIONS ///////////////////////////////////////////////////////////////
 
@@ -190,6 +193,186 @@ struct Arg
 };
 
 
+#if MACRO
+/////// MACROS ////////////////////////////////////////////////////////////////
+
+class Macro : protected RefCounter
+{
+public:
+	Macro() : data( 0 )
+	{
+		CDBG << "Macro()" << endl;
+	}
+
+	Macro( const string& p_name, const string& p_type, const string& p_args )
+	{
+		CDBG << "Macro(" << p_name << ", " << p_type << ", " << p_args << ")" << endl;
+		data = new Data();
+		data->name = p_name;
+		data->type = p_type;
+		data->args = p_args;
+		data->level = 0;
+		data->adding = 1;
+		data->eof = 0;
+		data->itText = data->text.begin();
+		data->count = 0;
+	}
+
+	Macro ( const Macro& other )
+	: RefCounter( other )
+	, data( other.data )
+	{
+		CDBG << "Macro(other)" << endl;
+	}
+
+	Macro &operator=( const Macro &other )
+	{
+		CDBG << "Macro = other";
+		if ( setRef( other ) )
+		{
+			CDBG << " delete";
+			delete data;
+		}
+		data = other.data;
+		CDBG << " OK" << endl;
+		return *this;
+	}
+
+	~Macro()
+	{
+		CDBG << "~Macro()";
+		if ( delRef() )
+		{
+			CDBG << " delete";
+			delete data;
+		}
+		CDBG << " OK" << endl;
+	}
+
+	operator bool() const
+	{
+		return data && data->adding;
+	}
+
+	bool add( const string& p_op, const string& p_line )
+	{
+		if ( !data )
+		{
+			CDBG << "add(): !data" << endl;
+			return false;
+		}
+		if ( p_op == "MACRO" || p_op == "REPT" || p_op == "IRP" || p_op == "IRPC" )
+		{
+			++data->level;
+		}
+		else if ( p_op == "ENDM" )
+		{
+			if ( !data->level )
+				return data->adding = false;
+			--data->level;
+		}
+
+		CDBG << "add(): push_back " << p_line << endl;
+
+		data->text.push_back( p_line );
+		data->itText = data->text.end();
+		return true;
+	}
+
+	void rewind()
+	{
+		if ( !data )
+		{
+			CDBG << "rewind(): !data" << endl;
+			return;
+		}
+		data->itText = data->text.begin();
+	}
+
+	bool eof() const
+	{
+		if ( !data )
+		{
+			CDBG << "eof(): !data" << endl;
+			return true;
+		}
+		return data->eof;
+	}
+
+	string getline()
+	{
+		if ( !data )
+		{
+			CDBG << "getline(): !data" << endl;
+			return "";
+		}
+		CDBG << "getline(): data" << ( ( data->itText == data->text.end() ) ? "" : *(data->itText) ) << endl;
+		if ( data->itText == data->text.end() )
+		{
+			if ( data->count++ < data->rept )
+				rewind();
+		}
+
+		if ( data->itText == data->text.end() )
+		{
+			data->eof = true;
+			return "";
+		}
+
+		return *(data->itText++);
+	}
+
+	string gettype() const
+	{
+		if ( !data )
+		{
+			CDBG << "gettype(): !data" << endl;
+			return "";
+		}
+		return data->type;
+	}
+
+	void rept( int rept )
+	{
+		if ( !data )
+		{
+			CDBG << "rept(): !data" << endl;
+			return;
+		}
+		data->rept = rept;
+	}
+
+	string args()
+	{
+		if ( !data )
+		{
+			CDBG << "args(): !data" << endl;
+			return "";
+		}
+		return data->args;
+	}
+
+private:
+	struct Data
+	{
+		string name;
+		string type;
+		string args;
+
+		vector< string > text;
+		vector< string >::const_iterator itText;
+
+		int level;
+		bool adding;
+		bool eof;
+		int rept;
+		int count;
+	};
+
+	Data *data;
+};
+
+#endif
 
 /////// SOURCE ////////////////////////////////////////////////////////////////
 
@@ -279,6 +462,63 @@ private:
 	int num_;
 };
 
+#if MACRO
+class MacroSource : public Source_I
+{
+public:
+	MacroSource( const string &name, Macro &macro )
+	: name_( name ), macro_( macro )
+	{
+		num_ = 0;
+	}
+
+	virtual ~MacroSource()
+	{
+	}
+
+	virtual string getline()
+	{
+		CDBG << "macro getline()" << endl;
+		return macro_.getline();
+	}
+
+	virtual bool operator!()
+	{
+		CDBG << "macro operator!()" << endl;
+		return macro_.eof();
+	}
+
+	virtual void rewind()
+	{
+		CDBG << "macro rewind()" << endl;
+		macro_.rewind();
+		num_ = 0;
+	}
+
+	virtual size_t linenum()
+	{
+		CDBG << "macro linenum()" << endl;
+		return num_;
+	}
+
+	virtual string getname()
+	{
+		CDBG << "macro getname()" << endl;
+		return name_;
+	}
+
+	virtual string gettype()
+	{
+		CDBG << "macro gettype()" << endl;
+		return macro_.gettype();
+	}
+
+private:
+	string name_;
+	Macro macro_;
+	int num_;
+};
+#endif
 
 class Source : public Source_I, protected RefCounter
 {
@@ -293,6 +533,13 @@ public:
 	{
 	}
 
+#if MACRO
+	Source( const string &name, Macro &macro )
+	: source_( new MacroSource( name, macro ) )
+	{
+	}
+#endif
+
 	Source( const Source &other )
 	: RefCounter( other )
 	, source_( other.source_ )
@@ -303,7 +550,7 @@ public:
 	{
 		if ( delRef() )
 		{
-			_DEBUG_ cerr << "~Source(): delete " << source_->getname() << endl;
+			CDBG << "~Source(): delete " << source_->getname() << endl;
 			delete source_;
 		}
 	}
@@ -312,7 +559,7 @@ public:
 	{
 		if ( setRef( other ) )
 		{
-			_DEBUG_ cerr << "operator=(): delete " << source_->getname() << endl;
+			CDBG << "operator=(): delete " << source_->getname() << endl;
 			delete source_;
 		}
 
@@ -1767,6 +2014,11 @@ void main( int argc, const char* argp[] )
 		int errcount = 0;
 		int warncount = 0;
 
+#if MACRO
+		map< string, Macro > macros;
+		Macro macro;
+#endif
+
 		stack< Source > sources;
 		stack< int > conditions;
 		bool condit = true;
@@ -1844,6 +2096,34 @@ void main( int argc, const char* argp[] )
 			bool listblock = true;
 			bool oldcond = condit;
 
+#if MACRO
+			if ( macro )
+			{
+				CDBG << "if ( macro ) ok" << endl;
+				if ( !macro.add( op, line ) )
+				{
+					CDBG << "if ( !macro.add() ) ok" << endl;
+					if ( macro.gettype() == "REPT" )
+					{
+						CDBG << "macro rept push" << endl;
+						Arg arg = Parser::getarg( touppernotquoted( macro.args() ) );
+						macro.rept( arg.data );
+						sources.push( in );
+						in = Source( "REPT", macro );
+						beginSymbols();
+						log.info( "Macro: %s ***", in.getname().data() );
+					}
+				}
+				CDBG << "if ( macro ) ok" << endl;
+			}
+			else if ( op == "REPT" )
+			{
+				CDBG << "if ( op == REPT )" << endl;
+				macro = Macro( "REPT", "REPT", argstr );
+				CDBG << "if ( op == REPT )" << endl;
+			}
+			else
+#endif
 			if ( op == "IF" || op == "$IF" || op == "COND" )
 			{
 				conditions.push( condit );
@@ -2516,7 +2796,7 @@ void main( int argc, const char* argp[] )
 					if ( !options.nocerr && !lstfile.empty() && cout != cerr
 						&& log.isWarning() )
 					{
-						cerr << sstr.str();
+						CDBG << sstr.str();
 					}
 
 				}
