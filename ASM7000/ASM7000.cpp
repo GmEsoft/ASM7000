@@ -1,15 +1,11 @@
-#include <iostream>
-#include <iomanip>
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <map>
-#include <stack>
-#include <string>
-#include <cstdarg>
-#include <time.h>
+#include "Options.h"
+#include "Parser.h"
+#include "Source.h"
 
-#define MACRO 1
+#include <iomanip>
+#include <sstream>
+
+using namespace std;
 
 const char title[] = "** TMS-7000 Tiny Assembler - v0.3.0-alpha+dev - (C) 2024 GmEsoft, All rights reserved. **";
 
@@ -27,1390 +23,24 @@ const char help[] =
 	;
 
 
-using namespace std;
-
-typedef unsigned short word;
-typedef unsigned char  byte;
-
 word pc = 0;
 int pass;
-
-#define DEBUG_MSGS 0
-
-#define CDBG if ( DEBUG_MSGS ) cerr
-
-/////// OPTIONS ///////////////////////////////////////////////////////////////
-
-struct Options
-{
-	bool nocompatwarning;
-	bool nowarning;
-	bool nodebug;
-	bool list;
-	bool clist;
-	bool listall;
-	bool nolist;
-	bool noheader;
-	bool nolinenum;
-	bool nocerr;
-	bool page;
-
-
-	Options()
-	: nocompatwarning( false )
-	, nowarning( false )
-	, nodebug( !DEBUG_MSGS )
-	, list( true )
-	, clist( false )
-	, listall( false )
-	, nolist( false )
-	, noheader( false )
-	, nolinenum( false )
-	, nocerr( false )
-	, page( true )
-	{}
-};
 
 stack< Options > optstack;
 
 Options options;
 
+Symbols symbols;
+
+
+FunctionSeq_t functions;
 
 /////// UTILITIES /////////////////////////////////////////////////////////////
-
-/** Reference counter for classes sharing common resources.
- *
- * Those classes must derive from this one.
- * Plus:
- * - The copy constructor must call this one in its initializers list;
- * - The destructor must call delRef() and release the shared resources
- *   if delRef() returned true;
- * - The assignment operator must call setRef() and release the old shared
- *   resources if setRef() returned true, before assigning the new shared
- *   resources from the other object.
- *
- */
-class RefCounter
-{
-protected:
-	RefCounter()
-	: ref_( new size_t( 1 ) )
-	{
-	}
-
-	// Called by copy constructor in derived classes.
-	// Missing doing that will lead to problems !!
-	RefCounter( const RefCounter &other )
-	: ref_( other.ref_ )
-	{
-		addRef();
-	}
-
-	// Called by operator=() in derived classes;
-	// if returning true, the old pointers
-	// must be deleted.
-	bool setRef( const RefCounter &other )
-	{
-		bool ret = delRef();
-		ref_ = other.ref_;
-		addRef();
-		return ret;
-	}
-
-	virtual ~RefCounter()
-	{
-		// delRef() called in derived class !!
-	}
-
-	// Called by destructor in devived classes;
-	// if returning true, the old pointers
-	// must be deleted.
-	bool delRef()
-	{
-		bool ret;
-		if ( ret = ( ref_ && !--*ref_ ) )
-		{
-			delete ref_;
-			ref_ = 0;
-		}
-		return ret;
-	}
-private:
-	void addRef()
-	{
-		ref_ && ++*ref_;
-	}
-
-	size_t *ref_;
-};
-
-
-
-/////// ARGS //////////////////////////////////////////////////////////////////
-
-enum ArgType
-{
-	ARG_NONE = 0,
-	ARG_UNDEF,
-	ARG_IMM,
-	ARG_EFFEC,
-	ARG_DIR,
-	ARG_INDEX,
-	ARG_INDIR,
-	ARG_REG,
-	ARG_PORT,
-	ARG_A,
-	ARG_B,
-	ARG_ST,
-	ARG_TEXT,
-	ARG_DUP
-};
-
-const char* argtypes[] =
-{
-	"NONE",
-	"UNDEF",
-	"IMM",
-	"EFFEC",
-	"DIR",
-	"INDEX",
-	"INDIR",
-	"REG",
-	"PORT",
-	"A",
-	"B",
-	"ST",
-	"TEXT",
-	"DUP"
-};
-
-struct Arg
-{
-	ArgType type;
-	word	data;
-	string	str;
-	string	text;
-};
-
-
-#if MACRO
-/////// MACROS ////////////////////////////////////////////////////////////////
-
-class Macro : protected RefCounter
-{
-public:
-	Macro() : data( 0 )
-	{
-		CDBG << "Macro()" << endl;
-	}
-
-	Macro( const string& p_name, const string& p_type, const string& p_args )
-	{
-		CDBG << "Macro(" << p_name << ", " << p_type << ", " << p_args << ")" << endl;
-		data = new Data();
-		data->name = p_name;
-		data->type = p_type;
-		data->args = p_args;
-		data->level = 0;
-		data->adding = 1;
-		data->eof = 0;
-		data->itText = data->text.begin();
-		data->count = 0;
-	}
-
-	Macro ( const Macro& other )
-	: RefCounter( other )
-	, data( other.data )
-	{
-		CDBG << "Macro(other)" << endl;
-	}
-
-	Macro &operator=( const Macro &other )
-	{
-		CDBG << "Macro = other";
-		if ( setRef( other ) )
-		{
-			CDBG << " delete";
-			delete data;
-		}
-		data = other.data;
-		CDBG << " OK" << endl;
-		return *this;
-	}
-
-	~Macro()
-	{
-		CDBG << "~Macro()";
-		if ( delRef() )
-		{
-			CDBG << " delete";
-			delete data;
-		}
-		CDBG << " OK" << endl;
-	}
-
-	operator bool() const
-	{
-		return data && data->adding;
-	}
-
-	bool add( const string& p_op, const string& p_line )
-	{
-		if ( !data )
-		{
-			CDBG << "add(): !data" << endl;
-			return false;
-		}
-		if ( p_op == "MACRO" || p_op == "REPT" || p_op == "IRP" || p_op == "IRPC" )
-		{
-			++data->level;
-		}
-		else if ( p_op == "ENDM" )
-		{
-			if ( !data->level )
-				return data->adding = false;
-			--data->level;
-		}
-
-		CDBG << "add(): push_back " << p_line << endl;
-
-		data->text.push_back( p_line );
-		data->itText = data->text.end();
-		return true;
-	}
-
-	void rewind()
-	{
-		if ( !data )
-		{
-			CDBG << "rewind(): !data" << endl;
-			return;
-		}
-		data->itText = data->text.begin();
-	}
-
-	bool eof() const
-	{
-		if ( !data )
-		{
-			CDBG << "eof(): !data" << endl;
-			return true;
-		}
-		return data->eof;
-	}
-
-	string getline()
-	{
-		if ( !data )
-		{
-			CDBG << "getline(): !data" << endl;
-			return "";
-		}
-		CDBG << "getline(): data" << ( ( data->itText == data->text.end() ) ? "" : *(data->itText) ) << endl;
-		if ( data->itText == data->text.end() )
-		{
-			if ( data->count++ < data->rept )
-				rewind();
-		}
-
-		if ( data->itText == data->text.end() )
-		{
-			data->eof = true;
-			return "";
-		}
-
-		return *(data->itText++);
-	}
-
-	string gettype() const
-	{
-		if ( !data )
-		{
-			CDBG << "gettype(): !data" << endl;
-			return "";
-		}
-		return data->type;
-	}
-
-	void rept( int rept )
-	{
-		if ( !data )
-		{
-			CDBG << "rept(): !data" << endl;
-			return;
-		}
-		data->rept = rept;
-	}
-
-	string args()
-	{
-		if ( !data )
-		{
-			CDBG << "args(): !data" << endl;
-			return "";
-		}
-		return data->args;
-	}
-
-private:
-	struct Data
-	{
-		string name;
-		string type;
-		string args;
-
-		vector< string > text;
-		vector< string >::const_iterator itText;
-
-		int level;
-		bool adding;
-		bool eof;
-		int rept;
-		int count;
-	};
-
-	Data *data;
-};
-
-#endif
-
-/////// SOURCE ////////////////////////////////////////////////////////////////
-
-class Source_I
-{
-public:
-	virtual ~Source_I()
-	{
-	}
-
-	virtual string getline() = 0;
-
-	virtual bool operator!() = 0;
-
-	operator bool()
-	{
-		return !!*this;
-	}
-
-	virtual void rewind() = 0;
-
-	virtual size_t linenum() = 0;
-
-	virtual string getname() = 0;
-
-	virtual string gettype() = 0;
-};
-
-
-class FileSource : public Source_I
-{
-public:
-	FileSource( const string &name )
-	{
-		pIn_ = new ifstream( name.data() );
-		fail_ = !*pIn_;
-		num_ = 0;
-		name_ = name;
-	}
-
-	virtual ~FileSource()
-	{
-		delete pIn_;
-	}
-
-	virtual string getline()
-	{
-		fail_ = !pIn_->getline( buf_, sizeof buf_ );
-		if ( fail_ )
-			return "";
-		++num_;
-		return buf_;
-	}
-
-	virtual bool operator!()
-	{
-		return fail_;
-	}
-
-	virtual void rewind()
-	{
-		pIn_->clear();
-		pIn_->seekg(0, ios::beg);
-		num_ = 0;
-	}
-
-	virtual size_t linenum()
-	{
-		return num_;
-	}
-
-	virtual string getname()
-	{
-		return name_;
-	}
-
-	virtual string gettype()
-	{
-		return "FILE";
-	}
-
-private:
-	string name_;
-	char buf_[255];
-	ifstream *pIn_;
-	bool fail_;
-	int num_;
-};
-
-#if MACRO
-class MacroSource : public Source_I
-{
-public:
-	MacroSource( const string &name, Macro &macro )
-	: name_( name ), macro_( macro )
-	{
-		num_ = 0;
-	}
-
-	virtual ~MacroSource()
-	{
-	}
-
-	virtual string getline()
-	{
-		CDBG << "macro getline()" << endl;
-		return macro_.getline();
-	}
-
-	virtual bool operator!()
-	{
-		CDBG << "macro operator!()" << endl;
-		return macro_.eof();
-	}
-
-	virtual void rewind()
-	{
-		CDBG << "macro rewind()" << endl;
-		macro_.rewind();
-		num_ = 0;
-	}
-
-	virtual size_t linenum()
-	{
-		CDBG << "macro linenum()" << endl;
-		return num_;
-	}
-
-	virtual string getname()
-	{
-		CDBG << "macro getname()" << endl;
-		return name_;
-	}
-
-	virtual string gettype()
-	{
-		CDBG << "macro gettype()" << endl;
-		return macro_.gettype();
-	}
-
-private:
-	string name_;
-	Macro macro_;
-	int num_;
-};
-#endif
-
-class Source : public Source_I, protected RefCounter
-{
-public:
-	Source()
-	: source_( 0 )
-	{
-	}
-
-	Source( const string &name )
-	: source_( new FileSource( name ) )
-	{
-	}
-
-#if MACRO
-	Source( const string &name, Macro &macro )
-	: source_( new MacroSource( name, macro ) )
-	{
-	}
-#endif
-
-	Source( const Source &other )
-	: RefCounter( other )
-	, source_( other.source_ )
-	{
-	}
-
-	virtual ~Source()
-	{
-		if ( delRef() )
-		{
-			CDBG << "~Source(): delete " << source_->getname() << endl;
-			delete source_;
-		}
-	}
-
-	Source &operator=( const Source &other )
-	{
-		if ( setRef( other ) )
-		{
-			CDBG << "operator=(): delete " << source_->getname() << endl;
-			delete source_;
-		}
-
-		source_ = other.source_;
-
-		return *this;
-	}
-
-	virtual string getline()
-	{
-		return source_->getline();
-	}
-
-	virtual bool operator!()
-	{
-		return !*source_;
-	}
-
-	virtual void rewind()
-	{
-		source_->rewind();
-	}
-
-	virtual size_t linenum()
-	{
-		return source_->linenum();
-	}
-
-	virtual string getname()
-	{
-		return source_->getname();
-	}
-
-	virtual string gettype()
-	{
-		return source_->gettype();
-	}
-
-private:
-	Source_I *source_;
-};
-
-
 
 #define enum_pair( A, B ) ( ( (A) << 4 ) | (B) )
 
 
-/////// STRINGS ///////////////////////////////////////////////////////////////
-
-char* timeStr()
-{
-	struct tm *ptime;
-	time_t clock;
-	char *s, *p;
-
-	time( &clock );
-	ptime = localtime( &clock );
-	s = asctime( ptime );
-	p = s + strlen( s ) - 1;
-	if ( *p == 0x0A )
-		*p = 0;
-	return s;
-}
-
-
-// Split string to tokens using provided separator
-vector<string> split( string str, const string &sep )
-{
-	vector<string> tokens;
-	tokens.reserve( 5 );
-	const char *p0 = str.data();
-	const char *p = p0;
-	bool cmt = false;
-	char quot = 0;
-
-	while ( *p )
-	{
-		cmt = cmt || ( !quot && *p == ';' );
-		while ( *p && ( cmt || sep.find( *p ) == string::npos ) )
-		{
-			bool esc = false;
-			do
-			{
-				if ( esc )
-				{
-					esc = false;
-				}
-				else if ( *p == '\\' )
-				{
-					esc = true;
-				}
-				else if ( quot )
-				{
-					if ( !*p || quot == *p )
-						quot = 0;
-				}
-				else if ( *p == '\'' || *p == '"' )
-				{
-					quot = *p;
-				}
-
-
-				if ( quot )
-					++p;
-			}
-			while ( *p && quot );
-
-			++p;
-		}
-		tokens.push_back( string( p0, p ) );
-		while ( *p && !cmt && sep.find( *p ) != string::npos )
-		{
-			++p;
-		}
-		p0 = p;
-	}
-	return tokens;
-}
-
-// Tabulate string to given position
-void tab( string &str, int tab )
-{
-	int len = 0;
-	for ( int pos = 0; pos < str.size(); ++pos )
-	{
-		if ( str[pos] == '\t' )
-			len += 8 - ( len % 8 );
-		else
-			++len;
-	}
-	while ( len < tab )
-	{
-		str += "\t";
-		len += 8 - ( len % 8 );
-	}
-
-}
-
-string touppernotquoted( const string& str )
-{
-	string ret = str;
-	bool esc = false;
-	char quot = 0;
-	for ( int i=0; i<ret.size(); ++i )
-	{
-		char c = ret[i];
-		if ( esc )
-			esc = false;
-		else if ( quot )
-		{
-			if ( c == quot )
-				quot = 0;
-		}
-		else if ( c == '\\' )
-		{
-			esc = true;
-		}
-		else
-		{
-			if ( c == '"' || c == '\'' )
-				quot = c;
-			else if ( !quot )
-				ret[i] = toupper( c );
-		}
-	}
-	return ret;
-}
-
-
-/////// MESSAGES //////////////////////////////////////////////////////////////
-
-class Log
-{
-
-	vector<string> errorsLog;
-	vector<string> warningsLog;
-	vector<string> infoLog;
-	vector<string> debugLog;
-	bool enabled_, debug_, warning_;
-	char buf[256];
-
-public:
-	Log()
-	: debug_( false ), warning_( true ), enabled_( true )
-	{}
-
-	void setEnabled( bool flag )
-	{
-		enabled_ = flag;
-	}
-
-	void setDebug( bool flag )
-	{
-		debug_ = flag;
-	}
-
-	void setWarning( bool flag )
-	{
-		warning_ = flag;
-	}
-
-	void error( const char* format, ... )
-	{
-		if ( enabled_ )
-		{
-			va_list args;
-			va_start( args, format );
-			vsprintf_s( buf, sizeof buf, format, args );
-			va_end( args );
-			errorsLog.push_back( buf );
-		}
-	}
-
-	void warn( const char* format, ... )
-	{
-		if ( enabled_ && warning_ )
-		{
-			va_list args;
-			va_start( args, format );
-			vsprintf_s( buf, sizeof buf, format, args );
-			va_end( args );
-			warningsLog.push_back( buf );
-		}
-	}
-
-	void info( const char* format, ... )
-	{
-		if ( enabled_ )
-		{
-			va_list args;
-			va_start( args, format );
-			vsprintf_s( buf, sizeof buf, format, args );
-			va_end( args );
-			infoLog.push_back( buf );
-		}
-	}
-
-	void debug( const char* format, ... )
-	{
-		if ( enabled_ && debug_ )
-		{
-			va_list args;
-			va_start( args, format );
-			vsprintf_s( buf, sizeof buf, format, args );
-			va_end( args );
-			debugLog.push_back( buf );
-		}
-	}
-
-	void writeTo( ostream &ostr)
-	{
-		for ( int i=0; i<errorsLog.size(); ++i )
-			ostr << "*** Error: " << errorsLog[i] << endl;
-		for ( int i=0; i<warningsLog.size(); ++i )
-			ostr << "*** Warning: " << warningsLog[i] << endl;
-		for ( int i=0; i<infoLog.size(); ++i )
-			ostr << "*** " << infoLog[i] << endl;
-		for ( int i=0; i<debugLog.size(); ++i )
-			ostr << "*** Debug: " << debugLog[i] << endl;
-	}
-
-	bool isWarning()
-	{
-		return !warningsLog.empty() || !errorsLog.empty();
-	}
-
-	size_t getErrorsCount()
-	{
-		return errorsLog.size();
-	}
-
-	size_t getWarningsCount()
-	{
-		return warningsLog.size();
-	}
-
-	void clear()
-	{
-		errorsLog.clear();
-		warningsLog.clear();
-		infoLog.clear();
-		debugLog.clear();
-	}
-
-};
-
-extern Log log;
-
-
-/////// SYMBOLS ///////////////////////////////////////////////////////////////
-
-typedef map< string, Arg > 			symbols_t;
-typedef symbols_t::iterator 		symbolptr_t;
-typedef deque< symbols_t >			symstack_t;
-typedef symstack_t::iterator 		symstackptr_t;
-
-symstack_t symstack;
-
-void beginSymbols()
-{
-	symstack.push_front( symbols_t() );
-}
-
-void endSymbols()
-{
-	symstack.pop_front();
-}
-
-Arg &getSymbol( const string &name )
-{
-	static Arg nosym = { ARG_UNDEF, 0xFFFF, "", "" };
-	for ( symstackptr_t it = symstack.begin(); it != symstack.end(); ++it )
-	{
-		symbolptr_t itsym = it->find( name );
-		if ( itsym != it->end() )
-			return itsym->second;
-	}
-	return nosym;
-}
-
-void addSymbol( const string &name, ArgType type, word data, const string &str, const string &text )
-{
-	if ( symstack.empty() )
-	{
-		log.error( "BAD: Symbols stack empty !!!" );
-	}
-	else
-	{
-		Arg sym = { type, data, str, text };
-		if ( symstack.front().find( name ) != symstack.front().end() ) // is local ?
-			symstack.front()[name] = sym;
-		else
-			symstack.back()[name] = sym;
-	}
-}
-
-void addLocalSymbol( const string &name, ArgType type, word data, const string &str, const string &text )
-{
-	if ( symstack.empty() )
-	{
-		log.error( "BAD: Symbols stack empty !!!" );
-	}
-//	else if ( symstack.size() == 1 )
-//	{
-//		log.error( "BAD: No local symbols map !!!" );
-//	}
-	else
-	{
-		Arg sym = { type, data, str, text };
-		symstack.front()[name] = sym;
-	}
-}
-
-void addSymbol( const string &name, const Arg &arg )
-{
-	if ( symstack.empty() )
-	{
-		log.error( "BAD: Symbols stack empty !!!" );
-	}
-	else
-	{
-		if ( symstack.front().find( name ) != symstack.front().end() ) // is local ?
-			symstack.front()[name] = arg;
-		else
-			symstack.back()[name] = arg;
-	}
-}
-
-void addLocalSymbol( const string &name, const Arg &arg )
-{
-	if ( symstack.empty() )
-	{
-		log.error( "BAD: Symbols stack empty !!!" );
-	}
-//	else if ( symstack.size() == 1 )
-//	{
-//		log.error( "BAD: No local symbols map !!!" );
-//	}
-	else
-	{
-		symstack.front()[name] = arg;
-	}
-}
-
-
-/////// FUNCTIONS /////////////////////////////////////////////////////////////
-
-class Function
-{
-public:
-	Function()
-	{}
-
-	Function( const string &name, const vector< string > &def )
-	{
-		if ( name.empty() )
-		{
-			log.error( "Missing function name" );
-		}
-		else if ( !def.size() )
-		{
-			log.error( "Missing function definition for %s", name.data() );
-		}
-		else
-		{
-			name_ = name;
-			for ( int i=0; i<def.size()-1; ++i )
-			{
-				params_.push_back( touppernotquoted( def[i] ) );
-			}
-			expr_ = touppernotquoted( def.back() );
-			log.debug( "Function %s = %s", name_.data(), expr_.data() );
-		}
-	}
-
-	string name_;
-	vector< string > params_;
-	string expr_;
-};
-
-typedef map< string, Function > FunctionSeq_t;
-typedef FunctionSeq_t::const_iterator FunctionPtr_t;
-
-FunctionSeq_t functions;
-
-
 /////// ARGS //////////////////////////////////////////////////////////////////
-
-class Parser
-{
-public:
-	Parser( const string &p_expr )
-	: expr( p_expr ), len( p_expr.size() ), p( 0 )
-	{
-	}
-
-	void skipblk()
-	{
-		while ( p < len && ( expr[p] == ' ' || expr[p] == '\t' ) )
-			++p;
-	}
-
-	string parsename()
-	{
-		string ret;
-		skipblk();
-		while ( p < len )
-		{
-			char c = expr[p];
-			if ( c == '_' || c == '$' || isalnum( c ) )
-			{
-				++p;
-				ret += c;
-				continue;
-			}
-			break;
-		}
-		return ret;
-	}
-
-	word parsenum( int radix )
-	{
-		word bin = 0;
-		word dec = 0;
-		word hex = 0;
-
-		skipblk();
-
-		while ( p < len )
-		{
-			word dig = 0;
-			char c = expr[p];
-			if ( isdigit( c ) )
-				dig = c - '0';
-			else if ( c >= 'A' && c <= 'F' )
-			{
-				dig = c - 'A' + 10;
-				if ( c == 'B' && radix == 0 )
-					radix = 2;
-			}
-			else if ( c == 'H' )
-			{
-				radix = 16;
-				++p;
-				break;
-			}
-			else
-			{
-				break;
-			}
-
-			if ( c != 'B' )
-				bin = ( bin << 1 ) + dig;
-			dec = 10 * dec + dig;
-			hex = ( hex << 4 ) + dig;
-
-			++p;
-		}
-
-		switch ( radix )
-		{
-		case 2:
-			return bin;
-		case 10:
-			return dec;
-		case 16:
-			return hex;
-		default:
-			return dec;
-		}
-	}
-
-	Arg parsevalue()
-	{
-		Arg ret = { ARG_IMM, 0xFFFF, expr, "" };
-		skipblk();
-		if ( p < len )
-		{
-			char c = expr[p];
-			if ( c == '>' )
-			{
-				++p;
-				ret.data = parsenum( 16 );
-			}
-			else if ( isdigit( c ) )
-			{
-				ret.data = parsenum( 0 );
-			}
-			else if ( c == '(' )
-			{
-				++p;
-				ret = parse();
-				skipblk();
-				if ( p < len && expr[p] == ')' )
-					++p;
-			}
-			else if ( c == '"' || c == '\'' )
-			{
-				++p;
-				bool esc = false, first = true;
-
-				while ( p < len && ( esc || expr[p] != c ) )
-				{
-					char ch = expr[p++];
-
-					if ( esc )
-					{
-						esc = false;
-					}
-					else if ( ch == '\\' )
-					{
-						esc = true;
-						continue;
-					}
-
-					if ( first )
-						first = false, ret.data = ch;
-
-					ret.text += ch;
-				}
-
-				if ( p < len )
-					++p;
-
-				ret.type = ARG_TEXT;
-				log.debug( "Text: [%s]", ret.text.data() );
-			}
-			else if ( c == '_' || c == '$' || isalpha( c ) )
-			{
-				string name = parsename();
-				if ( name == "$" )
-					ret.data = pc;
-				else
-				{
-					Arg sym = getSymbol( name );
-
-					if ( sym.type != ARG_UNDEF )
-						ret = sym;
-					else
-					{
-						FunctionPtr_t itFunc = functions.find( name );
-						if ( itFunc != functions.end() )
-						{
-							beginSymbols();
-							const Function &func = itFunc->second;
-							skipblk();
-							bool paren = !eof() && expr[p] == '(';
-
-							if ( paren )
-								++p;
-
-							for ( int i=0; i<func.params_.size() ; ++i )
-							{
-								skipblk();
-								if ( i>0 )
-								{
-									if ( eof() || expr[p] != ',' )
-										break;
-									++p;
-								}
-								Arg arg = parsevalue();
-								addLocalSymbol( func.params_[i], arg );
-								log.debug( "%s = (%s)%04X", func.params_[i].data(), argtypes[arg.type], arg.data );
-							}
-
-							skipblk();
-							if ( paren )
-							{
-								if ( !eof() && expr[p] == ')' )
-									++p;
-							}
-
-							Parser parser( func.expr_ );
-							ret = parser.parse();
-							log.debug( "%s = (%s)%04X", func.expr_.data(), argtypes[ret.type], ret.data );
-							if ( !parser.eof() )
-								log.error( "Error evaluating function %s: %s", name.data(), func.expr_.data() );
-
-							endSymbols();
-
-						}
-						else
-							log.error( "Symbol not found: [%s]", name.data() );
-					}
-				}
-			}
-			else
-			{
-				log.error( "Unsupported token: [%c]", c) ;
-			}
-		}
-		return ret;
-	}
-
-	Arg parse()
-	{
-		Arg ret = parsevalue();
-		skipblk();
-		while ( p < len )
-		{
-			char c = expr[p];
-			if ( c == '+' )
-			{
-				++p;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data += rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data += rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( c == '-' )
-			{
-				++p;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data -= rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data -= rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( c == '&' )
-			{
-				++p;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data &= rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data &= rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( c == '|' )
-			{
-				++p;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data |= rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data |= rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( expr.substr( p, 2 ) == "<<" )
-			{
-				p += 2;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data <<= rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data <<= rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( expr.substr( p, 2 ) == ">>" )
-			{
-				p += 2;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-					ret.data >>= rhs.data;
-				else if ( ret.type == ARG_TEXT && rhs.type == ARG_IMM && ret.text.size() == 1 )
-				{
-					ret.type = rhs.type;
-					ret.data >>= rhs.data;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( expr.substr( p, 3 ) == "DUP" )
-			{
-				p += 3;
-				Arg rhs = parsevalue();
-				if ( ret.type == ARG_IMM && rhs.type == ARG_IMM )
-				{
-					ret.text = string( ret.data, rhs.data );
-					ret.type = ARG_DUP;
-				}
-				else
-					log.error( "%c: incompatible types: %s and %s",
-						c, argtypes[ret.type], argtypes[rhs.type] );
-			}
-			else if ( c == ')' )
-			{
-				break;
-			}
-			else
-			{
-				log.error( "[%c]: unsupported operator in [%s]", c, expr.data() ) ;
-				break;
-			}
-
-			skipblk();
-		}
-		return ret;
-	}
-
-	bool eof()
-	{
-		return p >= len;
-	}
-
-	static Arg parse( const string &arg )
-	{
-		Arg ret = { ARG_NONE, 0xFFFF, arg, "" };
-
-		size_t size = arg.size();
-
-		if ( size > 0 )
-		{
-			Parser parser( arg );
-			ret = parser.parse();
-			if ( !parser.eof() )
-				log.error( "Parse error: %s", arg.data() );
-		}
-		else
-		{
-			log.error( "Missing literal", arg.data() );
-		}
-		return ret;
-	}
-
-	static Arg getarg( const string &arg )
-	{
-		Arg ret;
-		ret.type = ARG_NONE;
-		ret.data = 0;
-		ret.str  = arg;
-
-		size_t size = arg.size();
-
-		if ( arg == "A" )
-		{
-			ret.type = ARG_A;
-		}
-		else if ( arg == "B" )
-		{
-			ret.type = ARG_B;
-		}
-		else if ( arg == "ST" )
-		{
-			ret.type = ARG_ST;
-		}
-		else if ( arg[0] == '%' )
-		{
-			if ( size > 3 && arg.find( "(B)" ) == arg.size() - 3 )
-			{
-				ret.type = ARG_EFFEC;
-				ret.data = parse( arg.substr( 1, arg.size() - 4 ) ).data;
-			}
-			else
-			{
-				ret.type = ARG_IMM;
-				ret.data = parse( arg.substr( 1 ) ).data;
-			}
-		}
-		else if ( size > 2 && arg[0] == '*' )
-		{
-			ret.type = ARG_INDIR;
-			ret.data = parse( arg.substr( 1 ) ).data;
-		}
-		else if ( arg[0] == '@' )
-		{
-			if ( arg.find( "(B)" ) == arg.size() - 3 )
-			{
-				ret.type = ARG_INDEX;
-				ret.data = parse( arg.substr( 1, arg.size() - 4 ) ).data;
-			}
-			else
-			{
-				ret.type = ARG_DIR;
-				ret.data = parse( arg.substr( 1 ) ).data;
-			}
-		}
-		else
-		{
-			ret = parse( arg );
-		}
-		return ret;
-	}
-
-private:
-	const string &expr;
-	const size_t len;
-	size_t p;
-};
-
-
-
 
 bool chkargs( const string& op, const vector< Arg > &args, size_t num )
 {
@@ -1424,16 +54,16 @@ bool chkargs( const string& op, const vector< Arg > &args, size_t num )
 word getimmediate( const Arg &arg )
 {
 	if ( arg.type != ARG_IMM )
-		log.error( "Expecting immediate: [%s] (%s)", arg.str.data(), argtypes[arg.type] );
+		log.error( "Expecting immediate: [%s] (%s)", arg.str.data(), ArgTypes::get(arg.type) );
 	return arg.data;
 }
 
 word getbyte( const Arg &arg )
 {
 	if ( arg.type != ARG_IMM && arg.type != ARG_REG )
-		log.error( "Bad byte type: [%s]=%04X (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
+		log.error( "Bad byte type: [%s]=%04X (%s)", arg.str.data(), arg.data, ArgTypes::get(arg.type) );
 	else if ( short( arg.data ) < -128 || arg.data > 255 )
-		log.error( "Byte range error: [%s]=%04X (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
+		log.error( "Byte range error: [%s]=%04X (%s)", arg.str.data(), arg.data, ArgTypes::get(arg.type) );
 	return arg.data & 0xFF;
 }
 
@@ -1453,7 +83,7 @@ word getnum( const Arg &arg )
 	if ( arg.type == ARG_PORT )
 		ret -= 0x100;
 	if ( ret > 0xFF )
-		log.error( "Number range error: [%s]=%d (%s)", arg.str.data(), arg.data, argtypes[arg.type] );
+		log.error( "Number range error: [%s]=%d (%s)", arg.str.data(), arg.data, ArgTypes::get(arg.type) );
 	return ret & 0xFF;
 }
 
@@ -1462,7 +92,7 @@ word getoffset( word addr, const Arg &arg )
 	short offset = arg.data - addr;
 	if ( offset < -128 || offset > 127 )
 	{
-		log.error( "Offset range error: [%s] (%s)", arg.str.data(), argtypes[arg.type] );
+		log.error( "Offset range error: [%s] (%s)", arg.str.data(), ArgTypes::get(arg.type) );
 	}
 	return offset & 0xFF;
 }
@@ -1517,7 +147,7 @@ void ass_mov( const string op, vector< Arg > &args, vector< byte > &instr )
 			break;
 		default:
 			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
-				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
+				op.data(), args[0].str.data(), args[1].str.data(), ArgTypes::get(args[0].type), ArgTypes::get(args[1].type) );
 		}
 	}
 }
@@ -1549,7 +179,7 @@ void ass_movd( const string op, vector< Arg > &args, vector< byte > &instr )
 			break;
 		default:
 			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
-				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
+				op.data(), args[0].str.data(), args[1].str.data(), ArgTypes::get(args[0].type), ArgTypes::get(args[1].type) );
 		}
 	}
 }
@@ -1585,7 +215,7 @@ void ass_movp( const string op, vector< Arg > &args, vector< byte > &instr )
 			break;
 		default:
 			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
-				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
+				op.data(), args[0].str.data(), args[1].str.data(), ArgTypes::get(args[0].type), ArgTypes::get(args[1].type) );
 		}
 	}
 }
@@ -1605,7 +235,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 		case ARG_IMM: // extension
 		case ARG_REG: // extension
 			if ( !options.nocompatwarning )
-				log.warn( "Got type %s, assuming DIR: %s=%04X", argtypes[args[0].type], args[0].str.data(), args[0].data );
+				log.warn( "Got type %s, assuming DIR: %s=%04X", ArgTypes::get(args[0].type), args[0].str.data(), args[0].data );
 		case ARG_DIR:
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
@@ -1621,7 +251,7 @@ void ass_xaddr( const string op, vector< Arg > &args, int bits, vector< byte > &
 			instr.push_back( getlow( args[0] ) );
 			break;
 		default:
-			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), ArgTypes::get(args[0].type) );
 			instr.push_back( 0x80 | bits );
 			instr.push_back( gethigh( args[0] ) );
 			instr.push_back( getlow( args[0] ) );
@@ -1662,7 +292,7 @@ bool ass_unop( const string op, vector< Arg > &args, int num, int bits, vector< 
 			instr.push_back( getnum( args[0] ) );
 			break;
 		default:
-			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), ArgTypes::get(args[0].type) );
 		}
 	}
 	return ok;
@@ -1720,7 +350,7 @@ bool ass_binop( const string op, vector< Arg > &args, int num, int bits, vector<
 			break;
 		default:
 			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
-				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
+				op.data(), args[0].str.data(), args[1].str.data(), ArgTypes::get(args[0].type), ArgTypes::get(args[1].type) );
 		}
 	}
 	return ok;
@@ -1754,7 +384,7 @@ bool ass_binop_p( const string op, vector< Arg > &args, int num, int bits, vecto
 			break;
 		default:
 			log.error( "Bad arg(s): %s %s,%s (%s,%s)",
-				op.data(), args[0].str.data(), args[1].str.data(), argtypes[args[0].type], argtypes[args[1].type] );
+				op.data(), args[0].str.data(), args[1].str.data(), ArgTypes::get(args[0].type), ArgTypes::get(args[1].type) );
 		}
 	}
 	return ok;
@@ -1773,7 +403,7 @@ void ass_jump( const string op, vector< Arg > &args, int bits, vector< byte > &i
 			instr.push_back( getoffset( pc+2, args[0] ) );
 			break;
 		default:
-			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), ArgTypes::get(args[0].type) );
 		}
 	}
 }
@@ -1790,7 +420,7 @@ void ass_trap( const string op, vector< Arg > &args, vector< byte > &instr )
 			instr.push_back( 0xFF - args[0].data );
 			break;
 		default:
-			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+			log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), ArgTypes::get(args[0].type) );
 		}
 	}
 }
@@ -1820,7 +450,7 @@ void ass_pushpop( const string op, vector< Arg > &args, int bits, vector< byte >
 				instr.push_back( bits == 0x08 ? 0x0E : 0x08 );
 				break;
 			default:
-				log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), argtypes[args[0].type] );
+				log.error( "Bad arg: %s [%s] (%s)", op.data(), args[0].str.data(), ArgTypes::get(args[0].type) );
 			}
 		}
 	}
@@ -1962,7 +592,7 @@ void main( int argc, const char* argp[] )
 	{
 		ostr << title << endl << endl;
 
-		ostr  << "\t" << timeStr() << endl << endl;
+		ostr  << "\t" << Strings::timeStr() << endl << endl;
 		if ( !outfile.empty() )
 			ostr  << "\tAssembly of  : " << infile << endl;
 		ostr  << "\tOutput file  : " << outfile << endl;
@@ -1972,7 +602,7 @@ void main( int argc, const char* argp[] )
 		ostr  << endl;
 	}
 
-	beginSymbols();
+	symbols.beginSymbols();
 
 	for ( int i=0; i<0x100; ++i )
 	{
@@ -1980,7 +610,7 @@ void main( int argc, const char* argp[] )
 		sstr << "R" << i;
 		string label = sstr.str();
 		Arg arg = { ARG_REG, i, label, "" };
-		addSymbol( label, arg );
+		symbols.addSymbol( label, arg );
 	}
 
 	for ( int i=0; i<0x100; ++i )
@@ -1989,14 +619,14 @@ void main( int argc, const char* argp[] )
 		sstr << "P" << i;
 		string label = sstr.str();
 		Arg arg = { ARG_PORT, i + 0x100, label, "" };
-		addSymbol( label, arg );
+		symbols.addSymbol( label, arg );
 	}
 
 	Arg argDate = { ARG_TEXT, 0, "DATE", "DD-MM-YYYY" };
-	addSymbol( "DATE", argDate );
+	symbols.addSymbol( "DATE", argDate );
 
 	Arg argTime = { ARG_TEXT, 0, "DATE", "HH:MM:SS" };
-	addSymbol( "TIME", argTime );
+	symbols.addSymbol( "TIME", argTime );
 
 
 	for ( pass=1; pass<=2; ++pass )
@@ -2039,7 +669,7 @@ void main( int argc, const char* argp[] )
 					in = sources.top();
 					log.info( "File: %s ***", in.getname().data() );
 					sources.pop();
-					endSymbols();
+					symbols.endSymbols();
 				}
 				else
 				{
@@ -2050,7 +680,7 @@ void main( int argc, const char* argp[] )
 
 			int num = in.linenum();
 
-			vector< string > tokens = split( line, "\t :" );
+			vector< string > tokens = Strings::split( line, "\t :" );
 
 			// get tokens
 			string label, op, comment, argstr;
@@ -2069,12 +699,12 @@ void main( int argc, const char* argp[] )
 					switch ( i )
 					{
 					case 0:
-						label = touppernotquoted( token );
+						label = Strings::touppernotquoted( token );
 						if ( !label.empty() && label[label.size()-1] == ':' )
 							label = label.substr( 0, label.size()-1 );
 						break;
 					case 1:
-						op = touppernotquoted( token );
+						op = Strings::touppernotquoted( token );
 						break;
 					case 2:
 						argstr = token;
@@ -2086,7 +716,7 @@ void main( int argc, const char* argp[] )
 				}
 			}
 
-			vector< string > argstrs = split( argstr, "," );
+			vector< string > argstrs = Strings::split( argstr, "," );
 			size_t nargs = argstrs.size();
 
 			word addr = pc;
@@ -2106,11 +736,11 @@ void main( int argc, const char* argp[] )
 					if ( macro.gettype() == "REPT" )
 					{
 						CDBG << "macro rept push" << endl;
-						Arg arg = Parser::getarg( touppernotquoted( macro.args() ) );
+						Arg arg = Parser::getarg( Strings::touppernotquoted( macro.args() ) );
 						macro.rept( arg.data );
 						sources.push( in );
 						in = Source( "REPT", macro );
-						beginSymbols();
+						symbols.beginSymbols();
 						log.info( "Macro: %s ***", in.getname().data() );
 					}
 				}
@@ -2131,7 +761,7 @@ void main( int argc, const char* argp[] )
 				{
 					if ( condit )
 					{
-						Arg arg = Parser::getarg( touppernotquoted( argstrs[0] ) );
+						Arg arg = Parser::getarg( Strings::touppernotquoted( argstrs[0] ) );
 						condit = bool( arg.data );
 					}
 				}
@@ -2193,7 +823,7 @@ void main( int argc, const char* argp[] )
 						if ( in )
 						{
 							log.info( "File: %s ***", in.getname().data() );
-							beginSymbols();
+							symbols.beginSymbols();
 						}
 						else
 						{
@@ -2231,7 +861,7 @@ void main( int argc, const char* argp[] )
 				{
 					if ( nargs == 1 )
 					{
-						string arg = touppernotquoted( argstrs[0] );
+						string arg = Strings::touppernotquoted( argstrs[0] );
 						options.page = arg == "ON" || arg == "1";
 					}
 					else
@@ -2243,7 +873,7 @@ void main( int argc, const char* argp[] )
 				{
 					if ( nargs == 1 )
 					{
-						string arg = touppernotquoted( argstrs[0] );
+						string arg = Strings::touppernotquoted( argstrs[0] );
 						options.list = arg == "ON" || arg == "1";
 					}
 					else
@@ -2280,7 +910,7 @@ void main( int argc, const char* argp[] )
 					vector< Arg > args( nargs );
 					for ( int i=0; i<nargs; ++i )
 					{
-						args[i] = Parser::getarg( touppernotquoted( argstrs[i] ) );
+						args[i] = Parser::getarg( Strings::touppernotquoted( argstrs[i] ) );
 					}
 
 					ArgType type = ARG_IMM;
@@ -2307,23 +937,23 @@ void main( int argc, const char* argp[] )
 								case ARG_PORT:
 									addr = args[0].data;
 									type = args[0].type;
-									//log.error( "debug: set [%s] (%s=%04x)", args[0].str.data(), argtypes[type], addr );
+									//log.error( "debug: set [%s] (%s=%04x)", args[0].str.data(), ArgTypes::get(type], addr );
 									break;
 								default:
-									log.error( "Bad addressing mode: [%s] (%s)", args[0].str.data(), argtypes[args[0].type] );
+									log.error( "Bad addressing mode: [%s] (%s)", args[0].str.data(), ArgTypes::get(args[0].type) );
 								}
 							}
 						}
 
-						Arg sym = getSymbol( label );
+						Arg sym = symbols.getSymbol( label );
 						if ( pass == 2 )
 						{
 							if ( sym.type != ARG_UNDEF && sym.data != addr )
 								log.error ( "Multiple definition: [%s] (%s=%04X)",
-									label.data(), argtypes[sym.type], sym.data );
+									label.data(), ArgTypes::get(sym.type), sym.data );
 						}
 						Arg arg = { type, addr, label, "" };
-						addSymbol( label, arg );
+						symbols.addSymbol( label, arg );
 					}
 
 
@@ -2638,7 +1268,7 @@ void main( int argc, const char* argp[] )
 									instr.push_back( arg.text[p] );
 								break;
 							default:
-								log.error( "Bad arg type: %s", argtypes[arg.type] );
+								log.error( "Bad arg type: %s", ArgTypes::get(arg.type) );
 							}
 
 						}
@@ -2665,7 +1295,7 @@ void main( int argc, const char* argp[] )
 									instr.push_back( arg.text[p] );
 								break;
 							default:
-								log.error( "Bad arg type: %s", argtypes[arg.type] );
+								log.error( "Bad arg type: %s", ArgTypes::get(arg.type) );
 							}
 						}
 					}
@@ -2705,7 +1335,7 @@ void main( int argc, const char* argp[] )
 									log.info( "%s", arg.text.data() );
 								break;
 							default:
-								log.error( "Bad arg type: %s", argtypes[arg.type] );
+								log.error( "Bad arg type: %s", ArgTypes::get(arg.type) );
 							}
 						}
 					}
@@ -2736,8 +1366,8 @@ void main( int argc, const char* argp[] )
 							else
 							{
 								log.error( "Assertion failed: type of %s incompatible with type of %s", arg0.str.data(), arg1.str.data() );
-								log.info( "with %s as %s", arg0.str.data(), argtypes[arg0.type] );
-								log.info( " and %s as %s", arg1.str.data(), argtypes[arg1.type] );
+								log.info( "with %s as %s", arg0.str.data(), ArgTypes::get(arg0.type) );
+								log.info( " and %s as %s", arg1.str.data(), ArgTypes::get(arg1.type) );
 							}
 						}
 					}

@@ -127,7 +127,7 @@ Assembler syntax
 - `      CPU  name`*: CPU type (ignored).
 - `      PAGE ON/OFF`*: Page flag (currently unhandled).
 - `      LISTING ON/OFF`*: Listing flag (currently unhandled).
-- `name  FUNCTION [args,...],expr`*: Function definition. Formal arguments in `args,...` and the evaluated 
+- `name  FUNCTION [args,...],expr`* : Function definition. Formal arguments in `args,...` and the evaluated 
   expression in `expr`. Synonym: `FUNC`*.
 - `name  MACRO [args,...]`*: Macro definition. Formal arguments in `args,...` (not yet handled).
 - `      ENDM`*: End of macro definition. (not yet handled).
