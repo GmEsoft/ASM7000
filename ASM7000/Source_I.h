@@ -4,31 +4,33 @@
 
 using namespace std;
 
-/////// SOURCE ////////////////////////////////////////////////////////////////
-
-class Source_I
+namespace gmesoft
 {
-public:
-	virtual ~Source_I()
+
+	/////// SOURCE ////////////////////////////////////////////////////////////////
+
+	class Source_I
 	{
-	}
+	public:
+		virtual ~Source_I()
+		{
+		}
 
-	virtual string getline() = 0;
+		virtual string getline() = 0;
 
-	virtual bool operator!() = 0;
+		virtual bool operator!() = 0;
 
-	operator bool()
-	{
-		return !!*this;
-	}
+		operator bool()
+		{
+			return !!*this;
+		}
 
-	virtual void rewind() = 0;
+		virtual void rewind() = 0;
 
-	virtual size_t linenum() = 0;
+		virtual size_t linenum() = 0;
 
-	virtual string getname() = 0;
+		virtual string getname() = 0;
 
-	virtual string gettype() = 0;
-};
-
-
+		virtual string gettype() = 0;
+	};
+}

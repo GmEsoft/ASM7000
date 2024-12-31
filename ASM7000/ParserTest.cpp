@@ -2,48 +2,53 @@
 
 #include <iostream>
 
-Log log;
-Symbols symbols;
-word pc;
-FunctionSeq_t functions;
-
-int parsenumTest( const string &arg, int radix, int expected )
+namespace gmesoft
 {
-	Parser parser( arg );
-	int ret = parser.parsenum( radix );
-	log.writeTo( cerr );
-	log.clear();
+	Log log;
+	Symbols symbols;
+	word pc;
+	FunctionSeq_t functions;
 
-	if ( ret != expected )
+	int parsenumTest( const string &arg, int radix, int expected )
 	{
-		cerr << "Test failed: expected [" << expected << "] but got [" << ret << "]" << endl;
-		return 1;
+		Parser parser( arg );
+		int ret = parser.parsenum( radix );
+		log.writeTo( cerr );
+		log.clear();
+
+		if ( ret != expected )
+		{
+			cerr << "Test failed: expected [" << expected << "] but got [" << ret << "]" << endl;
+			return 1;
+		}
+
+		return 0;
 	}
 
-	return 0;
+	int parseTest( const string &arg, int expected )
+	{
+		Parser parser( arg );
+		Arg ret = parser.parse();
+		log.writeTo( cerr );
+		log.clear();
+
+		if ( ret.type != ARG_IMM )
+		{
+			cerr << "parseTest failed: expected type ARG_IMM but got [" << ArgTypes::get(ret.type)<< "]" << endl;
+			return 1;
+		}
+
+		if ( ret.data != expected )
+		{
+			cerr << "parseTest failed [" << arg << "]: expected [" << expected << "] but got [" << ret.data << "]" << endl;
+			return 1;
+		}
+
+		return 0;
+	}
 }
 
-int parseTest( const string &arg, int expected )
-{
-	Parser parser( arg );
-	Arg ret = parser.parse();
-	log.writeTo( cerr );
-	log.clear();
-
-	if ( ret.type != ARG_IMM )
-	{
-		cerr << "parseTest failed: expected type ARG_IMM but got [" << ArgTypes::get(ret.type)<< "]" << endl;
-		return 1;
-	}
-
-	if ( ret.data != expected )
-	{
-		cerr << "parseTest failed [" << arg << "]: expected [" << expected << "] but got [" << ret.data << "]" << endl;
-		return 1;
-	}
-
-	return 0;
-}
+using namespace gmesoft;
 
 int main()
 {

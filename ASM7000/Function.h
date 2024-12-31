@@ -9,44 +9,45 @@
 
 using namespace std;
 
-/////// FUNCTIONS /////////////////////////////////////////////////////////////
-
-class Function
+namespace gmesoft
 {
-public:
-	Function()
-	{}
+	/////// FUNCTIONS /////////////////////////////////////////////////////////////
 
-	Function( const string &name, const vector< string > &def )
+	class Function
 	{
-		if ( name.empty() )
+	public:
+		Function()
+		{}
+
+		Function( const string &name, const vector< string > &def )
 		{
-			log.error( "Missing function name" );
-		}
-		else if ( !def.size() )
-		{
-			log.error( "Missing function definition for %s", name.data() );
-		}
-		else
-		{
-			name_ = name;
-			for ( int i=0; i<def.size()-1; ++i )
+			if ( name.empty() )
 			{
-				params_.push_back( Strings::touppernotquoted( def[i] ) );
+				log.error( "Missing function name" );
 			}
-			expr_ = Strings::touppernotquoted( def.back() );
-			log.debug( "Function %s = %s", name_.data(), expr_.data() );
+			else if ( !def.size() )
+			{
+				log.error( "Missing function definition for %s", name.data() );
+			}
+			else
+			{
+				name_ = name;
+				for ( int i=0; i<def.size()-1; ++i )
+				{
+					params_.push_back( Strings::touppernotquoted( def[i] ) );
+				}
+				expr_ = Strings::touppernotquoted( def.back() );
+				log.debug( "Function %s = %s", name_.data(), expr_.data() );
+			}
 		}
-	}
 
-	string name_;
-	vector< string > params_;
-	string expr_;
-};
+		string name_;
+		vector< string > params_;
+		string expr_;
+	};
 
-typedef map< string, Function > FunctionSeq_t;
-typedef FunctionSeq_t::const_iterator FunctionPtr_t;
+	typedef map< string, Function > FunctionSeq_t;
+	typedef FunctionSeq_t::const_iterator FunctionPtr_t;
 
-extern FunctionSeq_t functions;
-
-
+	extern FunctionSeq_t functions;
+}

@@ -4,7 +4,7 @@ ASM7000
 Tiny assembler for TMS-7000 / PIC-7000 series
 ---------------------------------------------
 
-Version v0.3.0-alpha+DEV
+Version v0.3.1-alpha+DEV
 
 Work in progress. This is already viable to assemble the source code
 of the CTS256A-AL2 chip from G.I. without error and without any difference
@@ -30,6 +30,9 @@ Current limitations:
 
 History
 -------
+
+### v0.3.1-alpha+dev:
+- compatible with VS2022.
 
 ### v0.3.0-alpha+dev:
 - new Macro class;
@@ -320,7 +323,7 @@ Known issues
 GPLv3 License
 -------------
 
-Created by Michel Bernard (michel_bernard@hotmail.com) -
+Created by Michel Bernard (michel_bernard@icloud.com) -
 <http://www.github.com/GmEsoft/ASM7000>
 
 Copyright (c) 2024 Michel Bernard. All rights reserved.

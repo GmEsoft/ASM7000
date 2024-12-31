@@ -1,5 +1,8 @@
 #pragma once
 
-typedef unsigned short word;
-typedef unsigned char  byte;
+namespace gmesoft
+{
+	typedef unsigned short word;
+	typedef unsigned char  byte;
+}
 
